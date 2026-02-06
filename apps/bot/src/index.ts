@@ -911,6 +911,9 @@ bot.action('res:edit', async (ctx) => {
 async function start() {
   
   bot.catch((err) => console.error("BOT_ERROR", err));
+bot.catch((err) => console.error("BOT_ERROR", err));
+process.on("unhandledRejection", (e) => console.error("UNHANDLED_REJECTION", e));
+process.on("uncaughtException", (e) => console.error("UNCAUGHT_EXCEPTION", e));
 
 const me = await bot.telegram.getMe();
 console.log("BOT_ME", { id: me.id, username: me.username });
@@ -946,32 +949,36 @@ console.log("WEBHOOK_INFO", {
   }
 
   async function ensureWebhook(url: string) {
-    const info = await bot.telegram.getWebhookInfo();
+  const info = await bot.telegram.getWebhookInfo();
 
-    if (info.url === url) {
-      console.log(`Webhook already set: ${url}`);
+  const hasPending = (info.pending_update_count ?? 0) > 0;
+  const hasError = Boolean(info.last_error_date);
+
+  // если всё идеально — не трогаем
+  if (info.url === url && !hasPending && !hasError) {
+    console.log(`Webhook OK: ${url}`);
+    return;
+  }
+
+  for (;;) {
+    try {
+      await bot.telegram.setWebhook(url, { drop_pending_updates: true });
+      console.log(`Webhook reset/set: ${url}`);
       return;
-    }
+    } catch (e: any) {
+      const code = e?.response?.error_code;
+      const retryAfter = e?.response?.parameters?.retry_after ?? e?.parameters?.retry_after;
 
-    for (;;) {
-      try {
-        await bot.telegram.setWebhook(url, { drop_pending_updates: true });
-        console.log(`Webhook set: ${url}`);
-        return;
-      } catch (e: any) {
-        const code = e?.response?.error_code;
-        const retryAfter = e?.response?.parameters?.retry_after ?? e?.parameters?.retry_after;
-
-
-        if (code === 429 && retryAfter) {
-          console.log(`Telegram 429. Retry in ${retryAfter}s`);
-          await sleep((retryAfter + 1) * 1000);
-          continue;
-        }
-        throw e;
+      if (code === 429 && retryAfter) {
+        console.log(`Telegram 429. Retry in ${retryAfter}s`);
+        await new Promise(r => setTimeout(r, (retryAfter + 1) * 1000));
+        continue;
       }
+      throw e;
     }
   }
+}
+
 
   // сначала поднимаем сервер, потом проверяем/ставим вебхук
   http
