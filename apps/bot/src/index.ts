@@ -3,6 +3,7 @@ import { Telegraf, session } from 'telegraf';
 import { ensureUser } from "./db/airtable";
 import { updateTrialRemaining } from "./db/airtable";
 import { logRequest } from "./db/airtable";
+import http from "node:http";
 
 
 import type { BotContext, BotSession, Mode, ReplyProfile } from './bot.types';
@@ -889,8 +890,7 @@ bot.action('res:edit', async (ctx) => {
 // -------------------- launch --------------------
 async function start() {
   const isProd = process.env.NODE_ENV === "production";
-  const port = Number(process.env.PORT || 3000);
-  const publicUrl = process.env.PUBLIC_URL; // например: https://xxx.up.railway.app
+  const port = Number(process.env.PORT ?? 3000);
 
   if (!isProd) {
     // локально: polling
@@ -900,67 +900,55 @@ async function start() {
     return;
   }
 
+  const publicUrl = process.env.PUBLIC_URL;
   if (!publicUrl) throw new Error("PUBLIC_URL is missing (e.g. https://xxx.up.railway.app)");
 
-  // прод: webhook
+  const hookPath = "/telegraf";
+  const base = publicUrl.replace(/\/$/, "");
+  const webhookUrl = `${base}${hookPath}`;
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  function sleep(ms: number) {
+    return new Promise((r) => setTimeout(r, ms));
+  }
 
-async function setWebhookWithRetry(url: string) {
-  // если уже установлен — не дергаем
-  try {
+  async function ensureWebhook(url: string) {
     const info = await bot.telegram.getWebhookInfo();
-    if (info?.url === url) {
-      console.log("Webhook already set:", url);
+
+    if (info.url === url) {
+      console.log(`Webhook already set: ${url}`);
       return;
     }
-  } catch {}
 
-  for (let i = 0; i < 5; i++) {
-    try {
-      await bot.telegram.setWebhook(url, { drop_pending_updates: true });
-      console.log("Webhook set:", url);
-      return;
-    } catch (e: any) {
-      const code = e?.response?.error_code;
-      const retryAfter = e?.response?.parameters?.retry_after ?? 1;
+    for (;;) {
+      try {
+        await bot.telegram.setWebhook(url, { drop_pending_updates: true });
+        console.log(`Webhook set: ${url}`);
+        return;
+      } catch (e: any) {
+        const code = e?.response?.error_code;
+        const retryAfter = e?.response?.parameters?.retry_after ?? e?.parameters?.retry_after;
 
-      if (code === 429) {
-        const waitSec = retryAfter + 1;
-        console.log(`setWebhook 429, retry in ${waitSec}s`);
-        await sleep(waitSec * 1000);
-        continue;
+
+        if (code === 429 && retryAfter) {
+          console.log(`Telegram 429. Retry in ${retryAfter}s`);
+          await sleep((retryAfter + 1) * 1000);
+          continue;
+        }
+        throw e;
       }
-
-      throw e;
     }
   }
 
-  console.log("setWebhook still rate-limited; continue without crash");
-}
+  // сначала поднимаем сервер, потом проверяем/ставим вебхук
+  http
+  .createServer(bot.webhookCallback(hookPath))
+  .listen(port, "0.0.0.0", () => {
+    console.log(`Webhook server listening on ${port}${hookPath}`);
+  });
 
-const domain = publicUrl.replace(/^https?:\/\//, "");
-await setWebhookWithRetry(`${publicUrl}/telegraf`);
-
-await bot.launch({
-  webhook: {
-    domain,
-    hookPath: "/telegraf",
-    port,
-  },
-});
-
-console.log("Bot started (webhook).");
+await ensureWebhook(webhookUrl);
 
 
   console.log("Bot started (webhook).");
 }
-
-start().catch((e) => {
-  console.error("START_ERROR", e);
-  process.exit(1);
-});
-
-process.once("SIGINT", () => bot.stop("SIGINT"));
-process.once("SIGTERM", () => bot.stop("SIGTERM"));
 
