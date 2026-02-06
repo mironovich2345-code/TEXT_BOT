@@ -39,6 +39,9 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) throw new Error('BOT_TOKEN is missing in .env');
 
 const bot = new Telegraf<BotContext>(BOT_TOKEN);
+bot.catch((err) => console.error("BOT_ERROR", err));
+process.on("unhandledRejection", (e) => console.error("UNHANDLED_REJECTION", e));
+process.on("uncaughtException", (e) => console.error("UNCAUGHT_EXCEPTION", e));
 
 bot.catch((err, ctx) => {
   console.error("BOT_ERROR", err);
@@ -429,7 +432,7 @@ if (tgId) {
 
 // -------------------- /start --------------------
 bot.start(async (ctx) => {
-  console.log("GOT /start from", ctx.from?.id);
+  let trialRemaining = 3;
 
   try {
     const u = await ensureUser({
@@ -437,19 +440,20 @@ bot.start(async (ctx) => {
       username: ctx.from?.username,
       firstName: ctx.from?.first_name,
     });
-    ctx.session.trial.remaining = u?.trialRemaining ?? 3;
+    trialRemaining = u.trialRemaining ?? 3;
   } catch (e) {
-    console.error("Airtable ensureUser FAILED:", e);
-    ctx.session.trial.remaining = 3; // чтобы бот всё равно запускался
+    console.error("ENSURE_USER_ERROR", e);
   }
+
+  ctx.session.trial.remaining = trialRemaining;
 
   await cleanupUi(ctx);
   ctx.session.history = [];
   ctx.session.draft = {};
   ctx.session.variant = 0;
-
   return sendMainMenu(ctx);
 });
+
 
 
 // -------------------- main menu buttons --------------------
