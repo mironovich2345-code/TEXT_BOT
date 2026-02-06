@@ -1,0 +1,5 @@
+@"
+.env
+apps/bot/.env
+.env.*
+"@ | Out-File -Encoding utf8 .gitignore
