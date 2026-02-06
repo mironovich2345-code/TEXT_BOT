@@ -941,12 +941,18 @@ console.log("WEBHOOK_INFO", {
     return;
   }
 
-  const publicUrl = process.env.PUBLIC_URL;
-  if (!publicUrl) throw new Error("PUBLIC_URL is missing (e.g. https://xxx.up.railway.app)");
+ const publicUrl = process.env.PUBLIC_URL;
+if (!publicUrl) throw new Error("PUBLIC_URL is missing (e.g. https://xxx.up.railway.app)");
 
-  const hookPath = "/telegraf";
-  const base = publicUrl.replace(/\/$/, "");
-  const webhookUrl = `${base}${hookPath}`;
+const hookPath = "/telegraf";
+
+// берём только origin (схема + домен). Даже если PUBLIC_URL случайно с путём — игнорируем путь.
+const base = new URL(publicUrl).origin;
+
+const webhookUrl = `${base}${hookPath}`;
+
+console.log("WEBHOOK_COMPUTED", { publicUrl, base, hookPath, webhookUrl });
+
 
   function sleep(ms: number) {
     return new Promise((r) => setTimeout(r, ms));
@@ -985,11 +991,40 @@ console.log("WEBHOOK_INFO", {
 
 
   // сначала поднимаем сервер, потом проверяем/ставим вебхук
-  http
-  .createServer(bot.webhookCallback(hookPath))
+ const handle = bot.webhookCallback(hookPath);
+
+http
+  .createServer((req, res) => {
+    const url = (req.url ?? "").split("?")[0];
+
+    // покажет: долетают ли запросы вообще в контейнер
+    console.log("HTTP_IN", req.method, url);
+
+    // health (проверка из браузера/curл)
+    if (req.method === "GET" && (url === "/" || url === "/health" || url === hookPath)) {
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("ok");
+      return;
+    }
+
+    // не наш роут
+    if (url !== hookPath) {
+      res.writeHead(404, { "content-type": "text/plain" });
+      res.end("not found");
+      return;
+    }
+
+    // webhook Telegraf + защита от падения без ответа
+    Promise.resolve(handle(req, res)).catch((err) => {
+      console.error("WEBHOOK_HANDLER_ERROR", err);
+      if (!res.headersSent) res.writeHead(200);
+      res.end("ok");
+    });
+  })
   .listen(port, "0.0.0.0", () => {
     console.log(`Webhook server listening on ${port}${hookPath}`);
   });
+
 
 await ensureWebhook(webhookUrl);
 
@@ -998,12 +1033,7 @@ await ensureWebhook(webhookUrl);
 }
 
 start().catch((e) => {
-  bot.start(async (ctx) => {
-  console.log("GOT /start from", ctx.from?.id);
-  
- });
- bot.catch((err) => console.error("BOT_ERROR", err));
-
   console.error("START_ERROR", e);
   process.exit(1);
 });
+
