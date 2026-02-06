@@ -1,0 +1,15 @@
+﻿# secrets
+.env
+.env.*
+apps/bot/.env
+
+# deps
+node_modules/
+apps/**/node_modules/
+
+# build
+dist/
+apps/**/dist/
+
+# logs
+*.log
