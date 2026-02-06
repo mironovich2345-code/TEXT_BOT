@@ -952,3 +952,13 @@ await ensureWebhook(webhookUrl);
   console.log("Bot started (webhook).");
 }
 
+start().catch((e) => {
+  bot.start(async (ctx) => {
+  console.log("GOT /start from", ctx.from?.id);
+  
+ });
+ bot.catch((err) => console.error("BOT_ERROR", err));
+
+  console.error("START_ERROR", e);
+  process.exit(1);
+});
