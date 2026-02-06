@@ -40,6 +40,17 @@ if (!BOT_TOKEN) throw new Error('BOT_TOKEN is missing in .env');
 
 const bot = new Telegraf<BotContext>(BOT_TOKEN);
 
+bot.catch((err, ctx) => {
+  console.error("BOT_ERROR", err);
+});
+
+bot.use(async (ctx, next) => {
+  const text = (ctx.message as any)?.text;
+  if (text) console.log("IN_TEXT:", text);
+  else console.log("IN_UPDATE:", ctx.updateType);
+  return next();
+});
+
 // -------------------- session --------------------
 bot.use(
   session({
@@ -418,19 +429,28 @@ if (tgId) {
 
 // -------------------- /start --------------------
 bot.start(async (ctx) => {
-  const u = await ensureUser({
-  tgId: ctx.from!.id,
-  username: ctx.from?.username,
-  firstName: ctx.from?.first_name,
-});
-ctx.session.trial.remaining = u.trialRemaining;
+  console.log("GOT /start from", ctx.from?.id);
+
+  try {
+    const u = await ensureUser({
+      tgId: ctx.from!.id,
+      username: ctx.from?.username,
+      firstName: ctx.from?.first_name,
+    });
+    ctx.session.trial.remaining = u?.trialRemaining ?? 3;
+  } catch (e) {
+    console.error("Airtable ensureUser FAILED:", e);
+    ctx.session.trial.remaining = 3; // чтобы бот всё равно запускался
+  }
 
   await cleanupUi(ctx);
   ctx.session.history = [];
   ctx.session.draft = {};
   ctx.session.variant = 0;
+
   return sendMainMenu(ctx);
 });
+
 
 // -------------------- main menu buttons --------------------
 bot.hears([BTN_HOME], async (ctx) => {
