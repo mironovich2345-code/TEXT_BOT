@@ -903,16 +903,55 @@ async function start() {
   if (!publicUrl) throw new Error("PUBLIC_URL is missing (e.g. https://xxx.up.railway.app)");
 
   // прод: webhook
-  const domain = publicUrl.replace(/^https?:\/\//, "");
-  await bot.telegram.setWebhook(`${publicUrl}/telegraf`);
 
-  await bot.launch({
-    webhook: {
-      domain,
-      hookPath: "/telegraf",
-      port,
-    },
-  });
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function setWebhookWithRetry(url: string) {
+  // если уже установлен — не дергаем
+  try {
+    const info = await bot.telegram.getWebhookInfo();
+    if (info?.url === url) {
+      console.log("Webhook already set:", url);
+      return;
+    }
+  } catch {}
+
+  for (let i = 0; i < 5; i++) {
+    try {
+      await bot.telegram.setWebhook(url, { drop_pending_updates: true });
+      console.log("Webhook set:", url);
+      return;
+    } catch (e: any) {
+      const code = e?.response?.error_code;
+      const retryAfter = e?.response?.parameters?.retry_after ?? 1;
+
+      if (code === 429) {
+        const waitSec = retryAfter + 1;
+        console.log(`setWebhook 429, retry in ${waitSec}s`);
+        await sleep(waitSec * 1000);
+        continue;
+      }
+
+      throw e;
+    }
+  }
+
+  console.log("setWebhook still rate-limited; continue without crash");
+}
+
+const domain = publicUrl.replace(/^https?:\/\//, "");
+await setWebhookWithRetry(`${publicUrl}/telegraf`);
+
+await bot.launch({
+  webhook: {
+    domain,
+    hookPath: "/telegraf",
+    port,
+  },
+});
+
+console.log("Bot started (webhook).");
+
 
   console.log("Bot started (webhook).");
 }
