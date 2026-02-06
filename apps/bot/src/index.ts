@@ -909,6 +909,20 @@ bot.action('res:edit', async (ctx) => {
 
 // -------------------- launch --------------------
 async function start() {
+  
+  bot.catch((err) => console.error("BOT_ERROR", err));
+
+const me = await bot.telegram.getMe();
+console.log("BOT_ME", { id: me.id, username: me.username });
+
+const wh = await bot.telegram.getWebhookInfo();
+console.log("WEBHOOK_INFO", {
+  url: wh.url,
+  pending_update_count: wh.pending_update_count,
+  last_error_date: wh.last_error_date,
+  last_error_message: wh.last_error_message,
+});
+
   const isProd = process.env.NODE_ENV === "production";
   const port = Number(process.env.PORT ?? 3000);
 
