@@ -869,17 +869,34 @@ bot.action('res:think', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   if (isDuplicateAction(ctx, 'think')) return;
 
-  // ⬇️ убрали проверку mode, чтобы кнопка работала всегда
-  ctx.session.feedback.thinkMore += 1;
-  ctx.session.variant += 1;
+  // сообщение ожидания
+  const waitMsg = await ctx.reply('⏳ Перегенерирую ответ, подождите…');
+  trackBotMessage(ctx, waitMsg.message_id);
 
-  const prof = ctx.session.draft.useStandard ? ctx.session.defaults : (ctx.session.draft.profile ?? {});
-  if (!isCompleteProfile(prof)) {
-    if (isCompleteProfile(ctx.session.defaults)) return showResult(ctx, ctx.session.defaults);
-    return;
+  try {
+    ctx.session.feedback.thinkMore += 1;
+    ctx.session.variant += 1;
+
+    const prof = ctx.session.draft.useStandard
+      ? ctx.session.defaults
+      : (ctx.session.draft.profile ?? {});
+
+    if (!isCompleteProfile(prof)) {
+      if (isCompleteProfile(ctx.session.defaults)) {
+        return await showResult(ctx, ctx.session.defaults);
+      }
+      return;
+    }
+
+    return await showResult(ctx, prof);
+  } finally {
+    // удаляем "перегенерирую..."
+    await safeDelete(ctx, waitMsg.message_id);
+    // чтобы cleanupUi потом не пытался удалить второй раз
+    ctx.session.ui.botMsgIds = ctx.session.ui.botMsgIds.filter((id) => id !== waitMsg.message_id);
   }
-  return showResult(ctx, prof);
 });
+
 
 bot.action('res:plus', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
