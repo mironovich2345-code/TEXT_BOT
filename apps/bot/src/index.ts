@@ -296,6 +296,7 @@ if (tgId) {
 }
 
   const situation = ctx.session.draft.situation ?? '';
+  setMode(ctx, 'result'); // <— ВАЖНО: иначе res:* кнопки не работают
 
 if (OPENAI_DISABLED_RUNTIME) {
   // сразу заглушка
@@ -867,8 +868,8 @@ bot.action(/^std:hum:(.+)$/, async (ctx) => {
 bot.action('res:think', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   if (isDuplicateAction(ctx, 'think')) return;
-  if (ctx.session.mode !== 'result') return;
 
+  // ⬇️ убрали проверку mode, чтобы кнопка работала всегда
   ctx.session.feedback.thinkMore += 1;
   ctx.session.variant += 1;
 
@@ -879,6 +880,40 @@ bot.action('res:think', async (ctx) => {
   }
   return showResult(ctx, prof);
 });
+
+bot.action('res:plus', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  if (isDuplicateAction(ctx, 'plus')) return;
+
+  // ⬇️ убрали проверку mode
+  ctx.session.feedback.plus += 1;
+  const sent = await ctx.reply('✅ Спасибо! Учту.', mainMenu());
+  trackBotMessage(ctx, sent.message_id);
+  return;
+});
+
+bot.action('res:minus', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  if (isDuplicateAction(ctx, 'minus')) return;
+
+  // ⬇️ убрали проверку mode
+  ctx.session.feedback.minus += 1;
+  const sent = await ctx.reply('📝 Понял. Нажми “Подумай ещё” или “Изменить параметры”.', mainMenu());
+  trackBotMessage(ctx, sent.message_id);
+  return;
+});
+
+bot.action('res:edit', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  if (isDuplicateAction(ctx, 'edit')) return;
+
+  // ⬇️ убрали проверку mode
+  ctx.session.draft.useStandard = false;
+  ctx.session.draft.profile = {};
+  setMode(ctx, 'custom_audience');
+  return sendOrEditFlow(ctx, 'Изменим параметры. Для кого готовим ответ?', pickAudienceInline('cus'));
+});
+
 
 bot.action('res:plus', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
