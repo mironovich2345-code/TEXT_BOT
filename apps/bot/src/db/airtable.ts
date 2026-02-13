@@ -112,3 +112,83 @@ export async function logRequest(args: {
   }
 }
 
+const AIRTABLE_TOKEN = process.env.AIRTABLE_TOKEN;
+const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID;
+const AIRTABLE_USERS_TABLE = process.env.AIRTABLE_USERS_TABLE ?? 'Users';
+
+type AirtableRecord = { id: string; fields: Record<string, any> };
+
+async function airtableRequest(path: string, init?: RequestInit) {
+  if (!AIRTABLE_TOKEN) throw new Error('AIRTABLE_TOKEN missing');
+  if (!AIRTABLE_BASE_ID) throw new Error('AIRTABLE_BASE_ID missing');
+
+  const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${path}`;
+  const res = await fetch(url, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${AIRTABLE_TOKEN}`,
+      'Content-Type': 'application/json',
+      ...(init?.headers ?? {}),
+    },
+  });
+
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = (json as any)?.error?.message ?? JSON.stringify(json);
+    throw new Error(`Airtable ${res.status}: ${msg}`);
+  }
+  return json;
+}
+
+async function findUserByTgId(tgId: number): Promise<AirtableRecord | null> {
+  // совместимость: tg_id может быть Text или Number
+  const formula = `OR({tg_id}='${tgId}', {tg_id}=${tgId})`;
+  const qs = new URLSearchParams({
+    maxRecords: '1',
+    filterByFormula: formula,
+  });
+
+  const data = await airtableRequest(
+    `${encodeURIComponent(AIRTABLE_USERS_TABLE)}?${qs.toString()}`
+  );
+
+  const rec = (data as any)?.records?.[0] as AirtableRecord | undefined;
+  return rec ?? null;
+}
+
+/**
+ * Ставит реферера для пользователя ОДИН РАЗ (навсегда).
+ * Если referrer уже есть — ничего не делает.
+ */
+export async function setReferrerOnce(opts: {
+  inviteeTgId: number;
+  referrerTgId: number;
+  source?: string;      // например: "start"
+  payload?: string;     // raw payload
+}): Promise<{ status: 'set' | 'already' | 'invitee_missing' | 'self' }> {
+  const { inviteeTgId, referrerTgId, source = 'start', payload } = opts;
+
+  if (inviteeTgId === referrerTgId) return { status: 'self' };
+
+  const invitee = await findUserByTgId(inviteeTgId);
+  if (!invitee) return { status: 'invitee_missing' };
+
+  const current = invitee.fields?.referrer_tg_id;
+  if (current) return { status: 'already' };
+
+  const patch = {
+    fields: {
+      referrer_tg_id: String(referrerTgId),
+      referred_at: new Date().toISOString(),
+      ref_source: source,
+      ...(payload ? { ref_payload: payload } : {}),
+    },
+  };
+
+  await airtableRequest(
+    `${encodeURIComponent(AIRTABLE_USERS_TABLE)}/${invitee.id}`,
+    { method: 'PATCH', body: JSON.stringify(patch) }
+  );
+
+  return { status: 'set' };
+}

@@ -2,7 +2,7 @@
 
 import 'dotenv/config';
 import { Telegraf, session } from 'telegraf';
-import { ensureUser } from './db/airtable';
+import { ensureUser, setReferrerOnce } from './db/airtable';
 import { updateTrialRemaining } from './db/airtable';
 import { logRequest } from './db/airtable';
 import http from 'node:http';
@@ -41,6 +41,7 @@ import {
 } from '../keyboards';
 
 let OPENAI_DISABLED_RUNTIME = false;
+let BOT_USERNAME = process.env.BOT_USERNAME ?? '';
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) throw new Error('BOT_TOKEN is missing in .env');
@@ -482,6 +483,35 @@ function extractForwardedText(ctx: BotContext): string | null {
 
   return isForward ? text : null;
 }
+function getStartPayload(ctx: BotContext): string | null {
+  const anyCtx: any = ctx as any;
+
+  // Telegraf иногда даёт startPayload
+  const sp = anyCtx.startPayload;
+  if (typeof sp === 'string' && sp.trim()) return sp.trim();
+
+  const t = (anyCtx.message as any)?.text as string | undefined;
+  if (!t) return null;
+
+  const m = t.match(/^\/start(?:@[\w_]+)?(?:\s+(.+))?$/i);
+  return m?.[1]?.trim() || null;
+}
+
+function parseReferrerTgId(payload: string | null, selfId?: number): number | null {
+  if (!payload) return null;
+
+  const p = payload.trim();
+
+  // разрешаем: "12345" или "ref12345" или "ref_12345"
+  const m = p.match(/^(?:ref_|ref)?(\d{4,20})$/i);
+  if (!m) return null;
+
+  const id = Number(m[1]);
+  if (!Number.isFinite(id)) return null;
+  if (selfId && id === selfId) return null;
+
+  return id;
+}
 
 async function showPaywall(ctx: BotContext) {
   setMode(ctx, 'menu');
@@ -656,15 +686,41 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
 
 // -------------------- /start --------------------
 bot.start(async (ctx) => {
+  const selfId = ctx.from!.id;
+
+  const payload = getStartPayload(ctx);
+  const referrerTgId = parseReferrerTgId(payload, selfId);
+
   let trialRemaining = 3;
 
   try {
+    // 1) всегда создаём/обновляем текущего юзера
     const u = await ensureUser({
-      tgId: ctx.from!.id,
+      tgId: selfId,
       username: ctx.from?.username,
       firstName: ctx.from?.first_name,
     });
     trialRemaining = u.trialRemaining ?? 3;
+
+    // 2) если пришли по реф-ссылке — фиксируем навсегда (если ещё не было)
+    if (referrerTgId) {
+      try {
+        const r = await setReferrerOnce({
+          inviteeTgId: selfId,
+          referrerTgId,
+          source: 'start',
+          payload: payload ?? undefined,
+        });
+
+        console.log('REF_ATTACH', {
+          inviteeTgId: selfId,
+          referrerTgId,
+          status: r.status,
+        });
+      } catch (e) {
+        console.error('REF_ATTACH_ERROR', e);
+      }
+    }
   } catch (e) {
     console.error('ENSURE_USER_ERROR', e);
   }
@@ -675,8 +731,10 @@ bot.start(async (ctx) => {
   ctx.session.history = [];
   ctx.session.draft = {};
   ctx.session.variant = 0;
+
   return sendMainMenu(ctx);
 });
+
 
 // -------------------- main menu buttons --------------------
 bot.hears([BTN_HOME], async (ctx) => {
@@ -799,12 +857,16 @@ bot.action('par:link', async (ctx) => {
   if (isDuplicateAction(ctx, 'par_link')) return;
 
   const refCode = String(ctx.from?.id ?? 'unknown');
-  const sent = await ctx.reply(
-    `🔗 Твоя реферальная ссылка (заглушка):\n/start ${refCode}\n\nПозже сделаем кликабельную t.me/<bot>?start=<code>.`,
-    mainMenu()
-  );
+  const deepLink = BOT_USERNAME ? `https://t.me/${BOT_USERNAME}?start=${refCode}` : '';
+
+  const text = BOT_USERNAME
+    ? `🔗 Твоя реферальная ссылка:\n${deepLink}\n\nМожно также отправить командой:\n/start ${refCode}`
+    : `🔗 Твоя реферальная ссылка:\n/start ${refCode}\n\n(Чтобы была кликабельная t.me ссылка — добавь BOT_USERNAME в env или дождись getMe в проде.)`;
+
+  const sent = await ctx.reply(text, mainMenu());
   trackBotMessage(ctx, sent.message_id);
 });
+
 
 bot.action('par:stats', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
@@ -1444,6 +1506,7 @@ bot.action('res:edit', async (ctx) => {
 // -------------------- launch --------------------
 async function start() {
   const me = await bot.telegram.getMe();
+  BOT_USERNAME = me.username ?? BOT_USERNAME;
   console.log('BOT_ME', { id: me.id, username: me.username });
 
   const wh = await bot.telegram.getWebhookInfo();
