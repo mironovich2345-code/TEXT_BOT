@@ -16,7 +16,6 @@ import {
   navMenu,
   startInlineMenu,
   afterSituationInline,
-  resultInline,
   tariffInline,
   partnerInline,
 
@@ -122,6 +121,10 @@ function isDuplicateAction(ctx: BotContext, action: string, windowMs = 2000) {
   return false;
 }
 
+function trackBotMessage(ctx: BotContext, messageId: number) {
+  if (!ctx.session.ui.botMsgIds.includes(messageId)) ctx.session.ui.botMsgIds.push(messageId);
+}
+
 function getUiPage(ctx: BotContext, key: string): number {
   return Number((ctx.session.ui as any)[key] ?? 0);
 }
@@ -129,8 +132,12 @@ function setUiPage(ctx: BotContext, key: string, page: number) {
   (ctx.session.ui as any)[key] = page;
 }
 
-function trackBotMessage(ctx: BotContext, messageId: number) {
-  ctx.session.ui.botMsgIds.push(messageId);
+function setUiVal(ctx: BotContext, key: string, val: any) {
+  (ctx.session.ui as any)[key] = val;
+}
+function getUiVal<T = any>(ctx: BotContext, key: string, def?: T): T {
+  const v = (ctx.session.ui as any)[key];
+  return (v ?? def) as T;
 }
 
 async function cleanupUi(ctx: BotContext) {
@@ -166,19 +173,39 @@ async function sendOrEditFlow(ctx: BotContext, text: string, keyboard: any) {
       return;
     } catch (e: any) {
       const desc = e?.description ?? e?.response?.description ?? e?.message ?? '';
-      // важно: если Telegram пишет "message is not modified" — НЕ шлём новое сообщение
       if (String(desc).toLowerCase().includes('message is not modified')) {
         const mid = (ctx.callbackQuery as any)?.message?.message_id;
         if (typeof mid === 'number') ctx.session.ui.flowMsgId = mid;
         return;
       }
-      // иначе fallback на новое сообщение
     }
   }
 
   const sent = await ctx.reply(text, keyboard);
   trackBotMessage(ctx, sent.message_id);
   ctx.session.ui.flowMsgId = sent.message_id;
+}
+
+async function sendOrEditResultHTML(ctx: BotContext, html: string, keyboard: any) {
+  if (ctx.callbackQuery) {
+    try {
+      await ctx.editMessageText(html, { parse_mode: 'HTML', ...keyboard });
+      const mid = (ctx.callbackQuery as any)?.message?.message_id;
+      if (typeof mid === 'number') {
+        ctx.session.ui.resultMsgId = mid;
+        trackBotMessage(ctx, mid);
+      }
+      return;
+    } catch (e: any) {
+      const desc = e?.description ?? e?.response?.description ?? e?.message ?? '';
+      if (String(desc).toLowerCase().includes('message is not modified')) return;
+    }
+  }
+
+  const sent = await ctx.replyWithHTML(html, keyboard);
+  trackBotMessage(ctx, sent.message_id);
+  ctx.session.ui.resultMsgId = sent.message_id;
+  return sent;
 }
 
 function escapeHtml(s: string) {
@@ -189,10 +216,100 @@ function escapeHtml(s: string) {
     .replace(/"/g, '&quot;');
 }
 
-function isCompleteProfile(p: Partial<ReplyProfile>) {
-  const tones = Array.isArray(p.tone) ? p.tone : [];
-  const hums = Array.isArray(p.humanity) ? p.humanity : [];
-  return Boolean(p.greet && p.audience && p.formality && p.length && p.goal && tones.length > 0 && hums.length > 0);
+// ---------- result UI (collapse/expand params) ----------
+function resultKeyboard(expanded: boolean) {
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [
+          {
+            text: expanded ? '🔼 Скрыть параметры' : '🔽 Показать параметры',
+            callback_data: expanded ? 'res:params:hide' : 'res:params:show',
+          },
+        ],
+        [{ text: '🤔 Подумай ещё', callback_data: 'res:think' }],
+        [
+          { text: '👍 +', callback_data: 'res:plus' },
+          { text: '👎 -', callback_data: 'res:minus' },
+        ],
+        [{ text: '🛠️ Изменить параметры', callback_data: 'res:edit' }],
+        [{ text: '🏠 В меню', callback_data: 'nav:home' }],
+      ],
+    },
+  };
+}
+
+function profileSummary(p: Partial<ReplyProfile>) {
+  const audMap: Record<string, string> = {
+    boss: 'Руководитель',
+    peer: 'Коллега',
+    subordinate: 'Подчинённый',
+    service: 'Сервис',
+    personal: 'Личное',
+    other: 'Другое',
+  };
+  const goalMap: Record<string, string> = {
+    sell: 'Продажа',
+    ask: 'Просьба',
+    apologize: 'Извинение',
+    clarify: 'Уточнение',
+    refuse: 'Отказ',
+    buy: 'Покупка',
+    handle_negative: 'Негатив',
+    support: 'Поддержка',
+    congrats: 'Поздравление',
+    remind: 'Напоминание',
+    review: 'Отзыв',
+    collab: 'Сотрудничество',
+    cooperate: 'Сотрудничество',
+  };
+  const toneMap: Record<string, string> = {
+    neutral: 'Нейтрально',
+    friendly: 'Дружелюбно',
+    business: 'Деловой',
+    firm: 'Жёстко',
+    polite_pushy: 'Вежл.-настойчиво',
+    polite_soft: 'Вежливо (мягко)',
+    confident: 'Уверенно',
+    calm: 'Спокойно',
+    supportive: 'Поддерживающе',
+    positive: 'Позитивно',
+    official: 'Официально',
+    informal: 'Неформально',
+    ironic: 'Иронично',
+    categorical: 'Категорично',
+    constructive: 'Конструктивно',
+    conciliatory: 'Примирительно',
+  };
+  const humMap: Record<string, string> = {
+    thanks: 'Спасибо',
+    compliment: 'Комплимент',
+    humor: 'Юмор',
+    strict: 'По делу',
+    empathy: 'Эмпатия',
+    apology: 'Извинение',
+    care: 'Забота',
+    support: 'Поддержка',
+    tact: 'Тактично',
+    transparent: 'Честно',
+    confident_no_pressure: 'Уверенно без давления',
+    positive_close: 'Позитивно',
+    offer_choice: 'Выбор',
+    next_steps: 'Шаги',
+  };
+
+  const formality = p.formality === 'tu' ? 'Ты' : p.formality === 'vous' ? 'Вы' : '—';
+  const length =
+    p.length === 'short' ? 'Коротко' : p.length === 'normal' ? 'Средне' : p.length === 'detailed' ? 'Подробно' : '—';
+  const aud = p.audience ? (audMap[p.audience] ?? p.audience) : '—';
+  const goal = p.goal ? (goalMap[p.goal] ?? p.goal) : '—';
+
+  const tones = (p.tone ?? []).slice(0, 2).map((k) => toneMap[k] ?? k).join(', ') || '—';
+  const hums = (p.humanity ?? []).slice(0, 2).map((k) => humMap[k] ?? k).join(', ') || '—';
+
+  const advFlag = (p.ban?.length || p.emotion || p.format) ? ' • ⚙️ adv' : '';
+
+  return `👤 ${aud} • ${formality} • 📏 ${length} • 🎯 ${goal}\n🎙 ${tones} • 😊 ${hums}${advFlag}`;
 }
 
 function profileLabel(p: Partial<ReplyProfile>) {
@@ -250,10 +367,10 @@ function profileLabel(p: Partial<ReplyProfile>) {
     compliment: 'Комплимент',
     humor: 'Лёгкий юмор',
     strict: 'Строго по делу',
-    empathy: 'Эмпатия',
+    empathy: 'Эмпатия (“понимаю вас”)',
     apology: 'Извинение (если уместно)',
-    care: 'Забота',
-    support: 'Поддержка',
+    care: 'Забота (“хочу, чтобы вам было удобно”)',
+    support: 'Поддержка (“вы всё правильно делаете”)',
     tact: 'Тактичность / деликатность',
     transparent: 'Прозрачность (“скажу честно…”)',
     confident_no_pressure: 'Уверенность без давления',
@@ -267,14 +384,14 @@ function profileLabel(p: Partial<ReplyProfile>) {
     pressure: 'Не давить',
     discounts: 'Без скидок/торга',
     personal: 'Без личного',
-    guilt: 'Без вины/стыда',
+    shame: 'Без вины/стыда',
     passive_aggr: 'Без пассивной агрессии',
     argue: 'Не спорить/не конфликтовать',
-    flatter: 'Без чрезмерной лести',
+    flattery: 'Без чрезмерной лести',
     legal_threat: 'Без юр. угроз',
     lie: 'Без лжи/приукрашивания',
     flirt: 'Без флирта',
-    compare: 'Не сравнивать с конкурентами',
+    competitors: 'Не сравнивать с конкурентами',
   };
 
   const emoMap: Record<string, string> = {
@@ -301,9 +418,7 @@ function profileLabel(p: Partial<ReplyProfile>) {
     `Приветствие: ${p.greet ? (greetMap[p.greet] ?? p.greet) : '—'}`,
     `Для кого: ${p.audience ? (audMap[p.audience] ?? p.audience) : '—'}`,
     `Ты/Вы: ${p.formality === 'tu' ? 'Ты' : p.formality === 'vous' ? 'Вы' : '—'}`,
-    `Длина: ${
-      p.length === 'short' ? 'Коротко' : p.length === 'normal' ? 'Средне' : p.length === 'detailed' ? 'Подробно' : '—'
-    }`,
+    `Длина: ${p.length === 'short' ? 'Коротко' : p.length === 'normal' ? 'Средне' : p.length === 'detailed' ? 'Подробно' : '—'}`,
     `Цель: ${p.goal ? (goalMap[p.goal] ?? p.goal) : '—'}`,
     `Тон (до 4): ${tones}`,
     `Человечность (до 4): ${hums}`,
@@ -311,6 +426,20 @@ function profileLabel(p: Partial<ReplyProfile>) {
     `Эмоции (adv): ${p.emotion ? (emoMap[p.emotion] ?? p.emotion) : '—'}`,
     `Формат (adv): ${p.format ? (fmtMap[p.format] ?? p.format) : '—'}`,
   ].join('\n');
+}
+
+function buildResultHtml(answerText: string, profile: ReplyProfile, expanded: boolean) {
+  const params = expanded
+    ? `<b>Параметры:</b>\n<pre>${escapeHtml(profileLabel(profile))}</pre>`
+    : `<b>Параметры:</b>\n${escapeHtml(profileSummary(profile))}`;
+
+  return `✅ Ответ (для копирования):\n<pre>${escapeHtml(answerText)}</pre>\n\n${params}`;
+}
+
+function isCompleteProfile(p: Partial<ReplyProfile>) {
+  const tones = Array.isArray(p.tone) ? p.tone : [];
+  const hums = Array.isArray(p.humanity) ? p.humanity : [];
+  return Boolean(p.greet && p.audience && p.formality && p.length && p.goal && tones.length > 0 && hums.length > 0);
 }
 
 function generateReply(situation: string, profile: ReplyProfile, variant: number) {
@@ -366,6 +495,38 @@ async function showPaywall(ctx: BotContext) {
   return sent;
 }
 
+// -------------------- MULTI helpers --------------------
+function tryToggleLimited<T extends string>(list: T[], key: T, limit = 4): { next: T[]; limited: boolean } {
+  const isOn = list.includes(key);
+  if (isOn) return { next: list.filter((x) => x !== key), limited: false };
+  if (list.length >= limit) return { next: list, limited: true };
+  return { next: [...list, key], limited: false };
+}
+
+// -------------------- result render/toggle --------------------
+async function rerenderResult(ctx: BotContext) {
+  const text = getUiVal<string | null>(ctx, 'lastResultText', null);
+  const profile = getUiVal<ReplyProfile | null>(ctx, 'lastResultProfile', null);
+  const expanded = Boolean(getUiVal(ctx, 'paramsExpanded', false));
+
+  if (!text || !profile) {
+    await ctx.answerCbQuery('Нет данных для отображения.', { show_alert: false }).catch(() => {});
+    return;
+  }
+
+  const html = buildResultHtml(text, profile, expanded);
+
+  try {
+    await ctx.editMessageText(html, { parse_mode: 'HTML', ...resultKeyboard(expanded) });
+  } catch (e: any) {
+    const desc = e?.description ?? e?.response?.description ?? e?.message ?? '';
+    if (!String(desc).toLowerCase().includes('message is not modified')) {
+      // fallback (редко, но бывает если сообщение уже удалено)
+      await sendOrEditResultHTML(ctx, html, resultKeyboard(expanded));
+    }
+  }
+}
+
 async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
   if (!isCompleteProfile(profile)) {
     const sent = await ctx.reply('Не все параметры выбраны. Пройди шаги ещё раз.', mainMenu());
@@ -373,6 +534,7 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
     return sent;
   }
 
+  // trial/paywall: списываем за КАЖДЫЙ показ результата
   if (ctx.session.trial.remaining <= 0) return showPaywall(ctx);
 
   ctx.session.trial.remaining -= 1;
@@ -386,16 +548,18 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
 
   const full = profile as ReplyProfile;
 
+  // по умолчанию параметры свернуты
+  setUiVal(ctx, 'paramsExpanded', false);
+
   try {
     if (!process.env.OPENAI_API_KEY) {
       const stub = generateReply(situation, full, ctx.session.variant);
-      const html =
-        `✅ Ответ (для копирования):\n` +
-        `<pre>${escapeHtml(stub)}</pre>\n\n` +
-        `<b>Параметры:</b>\n<pre>${escapeHtml(profileLabel(full))}</pre>`;
-      const sent = await ctx.replyWithHTML(html, resultInline());
-      trackBotMessage(ctx, sent.message_id);
-      ctx.session.ui.resultMsgId = sent.message_id;
+
+      setUiVal(ctx, 'lastResultText', stub);
+      setUiVal(ctx, 'lastResultProfile', full);
+
+      const html = buildResultHtml(stub, full, false);
+      await sendOrEditResultHTML(ctx, html, resultKeyboard(false));
 
       if (tgId) {
         await logRequest({
@@ -409,20 +573,18 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
           situationLen: (ctx.session.draft.situation ?? '').length,
         }).catch(() => {});
       }
-
-      return sent;
+      return;
     }
 
     if (OPENAI_DISABLED_RUNTIME) {
       const stub = generateReply(situation, full, ctx.session.variant);
-      const html =
-        `⚠️ ИИ сейчас отключён (403 по региону/сети). Черновик:\n` +
-        `<pre>${escapeHtml(stub)}</pre>\n\n` +
-        `<b>Параметры:</b>\n<pre>${escapeHtml(profileLabel(full))}</pre>`;
-      const sent = await ctx.replyWithHTML(html, resultInline());
-      trackBotMessage(ctx, sent.message_id);
-      ctx.session.ui.resultMsgId = sent.message_id;
-      return sent;
+
+      setUiVal(ctx, 'lastResultText', stub);
+      setUiVal(ctx, 'lastResultProfile', full);
+
+      const html = buildResultHtml(stub, full, false);
+      await sendOrEditResultHTML(ctx, html, resultKeyboard(false));
+      return;
     }
 
     const { text, usage } = await generateReplyAI({
@@ -445,30 +607,25 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
     }
 
     const finalText = text || 'Не смог сгенерировать ответ. Нажми “Подумай ещё”.';
-    const html =
-      `✅ Ответ (для копирования):\n` +
-      `<pre>${escapeHtml(finalText)}</pre>\n\n` +
-      `<b>Параметры:</b>\n<pre>${escapeHtml(profileLabel(full))}</pre>`;
 
-    const sent = await ctx.replyWithHTML(html, resultInline());
-    trackBotMessage(ctx, sent.message_id);
-    ctx.session.ui.resultMsgId = sent.message_id;
-    return sent;
+    setUiVal(ctx, 'lastResultText', finalText);
+    setUiVal(ctx, 'lastResultProfile', full);
+
+    const html = buildResultHtml(finalText, full, false);
+    await sendOrEditResultHTML(ctx, html, resultKeyboard(false));
+    return;
   } catch (e: any) {
     console.log('AI_ERROR', e?.message || e);
 
+    const stub = generateReply(situation, full, ctx.session.variant);
+
+    setUiVal(ctx, 'lastResultText', stub);
+    setUiVal(ctx, 'lastResultProfile', full);
+
     if (e instanceof OpenAIRegionBlockedError) {
       OPENAI_DISABLED_RUNTIME = true;
-
-      const stub = generateReply(situation, full, ctx.session.variant);
-      const html =
-        `⚠️ ИИ недоступен в текущем регионе/сети (403). Я временно переключился на черновик:\n` +
-        `<pre>${escapeHtml(stub)}</pre>\n\n` +
-        `<b>Параметры:</b>\n<pre>${escapeHtml(profileLabel(full))}</pre>`;
-
-      const sent = await ctx.replyWithHTML(html, resultInline());
-      trackBotMessage(ctx, sent.message_id);
-      ctx.session.ui.resultMsgId = sent.message_id;
+      const html = buildResultHtml(stub, full, false);
+      await sendOrEditResultHTML(ctx, html, resultKeyboard(false));
 
       if (tgId) {
         await logRequest({
@@ -482,20 +639,12 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
           situationLen: (ctx.session.draft.situation ?? '').length,
         }).catch(() => {});
       }
-
-      return sent;
+      return;
     }
 
-    const stub = generateReply(situation, full, ctx.session.variant);
-    const html =
-      `⚠️ ИИ временно недоступен, показал черновик:\n` +
-      `<pre>${escapeHtml(stub)}</pre>\n\n` +
-      `<b>Параметры:</b>\n<pre>${escapeHtml(profileLabel(full))}</pre>`;
-
-    const sent = await ctx.replyWithHTML(html, resultInline());
-    trackBotMessage(ctx, sent.message_id);
-    ctx.session.ui.resultMsgId = sent.message_id;
-    return sent;
+    const html = buildResultHtml(stub, full, false);
+    await sendOrEditResultHTML(ctx, html, resultKeyboard(false));
+    return;
   }
 }
 
@@ -597,7 +746,7 @@ bot.action('st:describe', async (ctx) => {
 
   return sendOrEditFlow(
     ctx,
-    'Описать ситуацию\nРежим ожидания включён ✅\n\nПришли: текст / пересланное сообщение / скрин (лучше с описанием ситуации).',
+    '1.1) Описать ситуацию\n1.2) Режим ожидания включён ✅\n\nПришли: текст / пересланное сообщение / скрин (лучше с подписью).',
     { reply_markup: { inline_keyboard: [[{ text: '🏠 В меню', callback_data: 'nav:home' }]] } }
   );
 });
@@ -610,7 +759,7 @@ bot.action('st:set_standard', async (ctx) => {
   ctx.session.stdReturnTo = 'menu';
   setMode(ctx, 'std_greet');
 
-  return sendOrEditFlow(ctx, 'Задать стандарт\n\nНужно ли приветствие?', pickGreetInline('std'));
+  return sendOrEditFlow(ctx, '1.3) Задать стандарт\n\n1) Нужно ли приветствие или сразу ответ?', pickGreetInline('std'));
 });
 
 // -------------------- partner inline actions --------------------
@@ -762,15 +911,7 @@ bot.action('as:new_custom', async (ctx) => {
   return sendOrEditFlow(ctx, '1) Нужно ли приветствие или отвечаем на вопрос?', pickGreetInline('cus'));
 });
 
-// -------------------- MULTI helpers --------------------
-function tryToggleLimited<T extends string>(list: T[], key: T, limit = 4): { next: T[]; limited: boolean } {
-  const isOn = list.includes(key);
-  if (isOn) return { next: list.filter((x) => x !== key), limited: false };
-  if (list.length >= limit) return { next: list, limited: true };
-  return { next: [...list, key], limited: false };
-}
-
-// --------- CUSTOM (greet -> audience -> formality -> length -> goal -> tone(multi) -> humanity(multi) -> generate) ---------
+// --------- CUSTOM flow ---------
 bot.action(/^cus:greet:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const v = (ctx.match as any)[1] as ReplyProfile['greet'];
@@ -830,7 +971,6 @@ bot.action(/^cus:goal:(.+)$/, async (ctx) => {
   return sendOrEditFlow(ctx, `6) Тон (можно до 4)\nВыбрано: ${selected.length}/4`, pickToneInline('cus', 0, selected));
 });
 
-// tone page
 bot.action(/^cus:tone:page:(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const page = Number((ctx.match as any)[1] ?? 0);
@@ -840,7 +980,21 @@ bot.action(/^cus:tone:page:(\d+)$/, async (ctx) => {
   return sendOrEditFlow(ctx, `6) Тон (можно до 4)\nВыбрано: ${selected.length}/4`, pickToneInline('cus', page, selected));
 });
 
-// tone toggle (поддерживает callback_data и с tog:, и без него, и с :page в конце)
+bot.action(/^cus:tone:done$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  setMode(ctx, 'custom_humanity');
+
+  const prof = (ctx.session.draft.profile ??= {});
+  const selected = (prof.humanity ??= []);
+  setUiPage(ctx, 'cusHumPage', 0);
+
+  return sendOrEditFlow(
+    ctx,
+    `7) Человечность (можно до 4)\nВыбрано: ${selected.length}/4`,
+    pickHumanityInline('cus', 0, selected)
+  );
+});
+
 bot.action(/^cus:tone:(?!page:|done$)(?:tog:|toggle:)?([^:]+)(?::(\d+))?$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const key = (ctx.match as any)[1] as ReplyProfile['tone'][number];
@@ -862,23 +1016,6 @@ bot.action(/^cus:tone:(?!page:|done$)(?:tog:|toggle:)?([^:]+)(?::(\d+))?$/, asyn
   return sendOrEditFlow(ctx, `6) Тон (можно до 4)\nВыбрано: ${next.length}/4`, pickToneInline('cus', page, next));
 });
 
-// tone done -> humanity
-bot.action(/^cus:tone:done$/, async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  setMode(ctx, 'custom_humanity');
-
-  const prof = (ctx.session.draft.profile ??= {});
-  const selected = (prof.humanity ??= []);
-  setUiPage(ctx, 'cusHumPage', 0);
-
-  return sendOrEditFlow(
-    ctx,
-    `7) Человечность (можно до 4)\nВыбрано: ${selected.length}/4`,
-    pickHumanityInline('cus', 0, selected)
-  );
-});
-
-// humanity page
 bot.action(/^cus:hum:page:(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const page = Number((ctx.match as any)[1] ?? 0);
@@ -892,7 +1029,17 @@ bot.action(/^cus:hum:page:(\d+)$/, async (ctx) => {
   );
 });
 
-// humanity toggle
+bot.action(/^cus:hum:done$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  setMode(ctx, 'pre_generate');
+
+  return sendOrEditFlow(
+    ctx,
+    '✅ Параметры выбраны.\n\nНажми «Сгенерировать» или открой «Расширенный вариант».',
+    generateInline()
+  );
+});
+
 bot.action(/^cus:hum:(?!page:|done$)(?:tog:|toggle:)?([^:]+)(?::(\d+))?$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const key = (ctx.match as any)[1] as ReplyProfile['humanity'][number];
@@ -918,19 +1065,7 @@ bot.action(/^cus:hum:(?!page:|done$)(?:tog:|toggle:)?([^:]+)(?::(\d+))?$/, async
   );
 });
 
-// humanity done -> generate
-bot.action(/^cus:hum:done$/, async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  setMode(ctx, 'pre_generate');
-
-  return sendOrEditFlow(
-    ctx,
-    '✅ Параметры выбраны.\n\nНажми «Сгенерировать» или открой «Расширенный вариант».',
-    generateInline()
-  );
-});
-
-// --------- STANDARD (то же самое, но пишем в defaults) ---------
+// --------- STANDARD flow ---------
 bot.action(/^std:greet:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const v = (ctx.match as any)[1] as ReplyProfile['greet'];
@@ -989,7 +1124,6 @@ bot.action(/^std:goal:(.+)$/, async (ctx) => {
   );
 });
 
-// std tone page
 bot.action(/^std:tone:page:(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const page = Number((ctx.match as any)[1] ?? 0);
@@ -1003,7 +1137,20 @@ bot.action(/^std:tone:page:(\d+)$/, async (ctx) => {
   );
 });
 
-// std tone toggle
+bot.action(/^std:tone:done$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  setMode(ctx, 'std_humanity');
+
+  const selected = ((ctx.session.defaults.humanity ??= []) as ReplyProfile['humanity']);
+  setUiPage(ctx, 'stdHumPage', 0);
+
+  return sendOrEditFlow(
+    ctx,
+    `Стандарт: 7) Человечность (до 4)\nВыбрано: ${selected.length}/4`,
+    pickHumanityInline('std', 0, selected)
+  );
+});
+
 bot.action(/^std:tone:(?!page:|done$)(?:tog:|toggle:)?([^:]+)(?::(\d+))?$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const key = (ctx.match as any)[1] as ReplyProfile['tone'][number];
@@ -1028,22 +1175,6 @@ bot.action(/^std:tone:(?!page:|done$)(?:tog:|toggle:)?([^:]+)(?::(\d+))?$/, asyn
   );
 });
 
-// std tone done -> humanity
-bot.action(/^std:tone:done$/, async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  setMode(ctx, 'std_humanity');
-
-  const selected = ((ctx.session.defaults.humanity ??= []) as ReplyProfile['humanity']);
-  setUiPage(ctx, 'stdHumPage', 0);
-
-  return sendOrEditFlow(
-    ctx,
-    `Стандарт: 7) Человечность (до 4)\nВыбрано: ${selected.length}/4`,
-    pickHumanityInline('std', 0, selected)
-  );
-});
-
-// std hum page
 bot.action(/^std:hum:page:(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const page = Number((ctx.match as any)[1] ?? 0);
@@ -1057,32 +1188,6 @@ bot.action(/^std:hum:page:(\d+)$/, async (ctx) => {
   );
 });
 
-// std hum toggle
-bot.action(/^std:hum:(?!page:|done$)(?:tog:|toggle:)?([^:]+)(?::(\d+))?$/, async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  const key = (ctx.match as any)[1] as ReplyProfile['humanity'][number];
-  const pageFromCb = (ctx.match as any)[2] ? Number((ctx.match as any)[2]) : undefined;
-
-  const before = ((ctx.session.defaults.humanity ??= []) as ReplyProfile['humanity']);
-  const page = Number.isFinite(pageFromCb as any) ? (pageFromCb as number) : getUiPage(ctx, 'stdHumPage');
-
-  const { next, limited } = tryToggleLimited(before, key, 4);
-  if (limited) {
-    await ctx.answerCbQuery('Можно выбрать максимум 4', { show_alert: false }).catch(() => {});
-    return;
-  }
-
-  ctx.session.defaults.humanity = next;
-  setUiPage(ctx, 'stdHumPage', page);
-
-  return sendOrEditFlow(
-    ctx,
-    `Стандарт: 7) Человечность (до 4)\nВыбрано: ${next.length}/4`,
-    pickHumanityInline('std', page, next)
-  );
-});
-
-// std hum done (сохранение стандарта)
 bot.action(/^std:hum:done$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
 
@@ -1109,6 +1214,30 @@ bot.action(/^std:hum:done$/, async (ctx) => {
   });
 
   return showResult(ctx, ctx.session.defaults);
+});
+
+bot.action(/^std:hum:(?!page:|done$)(?:tog:|toggle:)?([^:]+)(?::(\d+))?$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const key = (ctx.match as any)[1] as ReplyProfile['humanity'][number];
+  const pageFromCb = (ctx.match as any)[2] ? Number((ctx.match as any)[2]) : undefined;
+
+  const before = ((ctx.session.defaults.humanity ??= []) as ReplyProfile['humanity']);
+  const page = Number.isFinite(pageFromCb as any) ? (pageFromCb as number) : getUiPage(ctx, 'stdHumPage');
+
+  const { next, limited } = tryToggleLimited(before, key, 4);
+  if (limited) {
+    await ctx.answerCbQuery('Можно выбрать максимум 4', { show_alert: false }).catch(() => {});
+    return;
+  }
+
+  ctx.session.defaults.humanity = next;
+  setUiPage(ctx, 'stdHumPage', page);
+
+  return sendOrEditFlow(
+    ctx,
+    `Стандарт: 7) Человечность (до 4)\nВыбрано: ${next.length}/4`,
+    pickHumanityInline('std', page, next)
+  );
 });
 
 // --------- GENERATE + ADVANCED ---------
@@ -1166,7 +1295,6 @@ bot.action('gen:adv', async (ctx) => {
   return sendOrEditFlow(ctx, `8) Нельзя (до 4)\nВыбрано: ${selected.length}/4`, pickBanInline(0, selected));
 });
 
-// adv ban page
 bot.action(/^adv:ban:page:(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const page = Number((ctx.match as any)[1] ?? 0);
@@ -1176,7 +1304,12 @@ bot.action(/^adv:ban:page:(\d+)$/, async (ctx) => {
   return sendOrEditFlow(ctx, `8) Нельзя (до 4)\nВыбрано: ${selected.length}/4`, pickBanInline(page, selected));
 });
 
-// adv ban toggle
+bot.action(/^adv:ban:done$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  setMode(ctx, 'adv_emotion');
+  return sendOrEditFlow(ctx, '9) Эмоции собеседника (1 вариант):', pickEmotionInline());
+});
+
 bot.action(/^adv:ban:(?!page:|done$)(?:tog:|toggle:)?([^:]+)(?::(\d+))?$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const key = (ctx.match as any)[1] as NonNullable<ReplyProfile['ban']>[number];
@@ -1196,12 +1329,6 @@ bot.action(/^adv:ban:(?!page:|done$)(?:tog:|toggle:)?([^:]+)(?::(\d+))?$/, async
   setUiPage(ctx, 'advBanPage', page);
 
   return sendOrEditFlow(ctx, `8) Нельзя (до 4)\nВыбрано: ${next.length}/4`, pickBanInline(page, next));
-});
-
-bot.action(/^adv:ban:done$/, async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  setMode(ctx, 'adv_emotion');
-  return sendOrEditFlow(ctx, '9) Эмоции собеседника (1 вариант):', pickEmotionInline());
 });
 
 bot.action(/^adv:emo:(.+)$/, async (ctx) => {
@@ -1227,6 +1354,18 @@ bot.action(/^adv:fmt:(.+)$/, async (ctx) => {
 });
 
 // -------------------- RESULT actions --------------------
+bot.action('res:params:show', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  setUiVal(ctx, 'paramsExpanded', true);
+  return rerenderResult(ctx);
+});
+
+bot.action('res:params:hide', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  setUiVal(ctx, 'paramsExpanded', false);
+  return rerenderResult(ctx);
+});
+
 bot.action('res:think', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   if (isDuplicateAction(ctx, 'think')) return;
