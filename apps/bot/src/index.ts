@@ -853,16 +853,17 @@ bot.action(/^cus:tone:done$/, async (ctx) => {
   );
 });
 
-bot.action(/^cus:tone:(?!page:|done$)(.+)$/, async (ctx) => {
+bot.action(/^cus:tone:toggle:([^:]+):(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
-  const key = (ctx.match as any)[1] as ReplyProfile['tone'][number];
+  const key = (ctx.match as any)[1] as ReplyProfile["tone"][number];
+  const page = Number((ctx.match as any)[2] ?? 0);
 
   const prof = (ctx.session.draft.profile ??= {});
   const before = (prof.tone ??= []);
   const after = toggleMulti(before, key, 4);
 
   if (before.length === after.length && !before.includes(key)) {
-    await ctx.answerCbQuery('Можно выбрать максимум 4', { show_alert: false }).catch(() => {});
+    await ctx.answerCbQuery("Можно выбрать максимум 4", { show_alert: false }).catch(() => {});
   }
 
   prof.tone = after;
@@ -870,9 +871,10 @@ bot.action(/^cus:tone:(?!page:|done$)(.+)$/, async (ctx) => {
   return sendOrEditFlow(
     ctx,
     `6) Тон (можно до 4)\nВыбрано: ${after.length}/4`,
-    pickToneInline('cus', 0, after)
+    pickToneInline("cus", page, after)
   );
 });
+
 
 bot.action(/^cus:hum:page:(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
@@ -897,16 +899,17 @@ bot.action(/^cus:hum:done$/, async (ctx) => {
   );
 });
 
-bot.action(/^cus:hum:(?!page:|done$)(.+)$/, async (ctx) => {
+bot.action(/^cus:hum:toggle:([^:]+):(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
-  const key = (ctx.match as any)[1] as ReplyProfile['humanity'][number];
+  const key = (ctx.match as any)[1] as ReplyProfile["humanity"][number];
+  const page = Number((ctx.match as any)[2] ?? 0);
 
   const prof = (ctx.session.draft.profile ??= {});
   const before = (prof.humanity ??= []);
   const after = toggleMulti(before, key, 4);
 
   if (before.length === after.length && !before.includes(key)) {
-    await ctx.answerCbQuery('Можно выбрать максимум 4', { show_alert: false }).catch(() => {});
+    await ctx.answerCbQuery("Можно выбрать максимум 4", { show_alert: false }).catch(() => {});
   }
 
   prof.humanity = after;
@@ -914,9 +917,10 @@ bot.action(/^cus:hum:(?!page:|done$)(.+)$/, async (ctx) => {
   return sendOrEditFlow(
     ctx,
     `7) Человечность (можно до 4)\nВыбрано: ${after.length}/4`,
-    pickHumanityInline('cus', 0, after)
+    pickHumanityInline("cus", page, after)
   );
 });
+
 
 // --------- STANDARD (то же самое, но пишем в defaults) ---------
 bot.action(/^std:greet:(.+)$/, async (ctx) => {
@@ -974,39 +978,16 @@ bot.action(/^std:goal:(.+)$/, async (ctx) => {
   );
 });
 
-bot.action(/^std:tone:page:(\d+)$/, async (ctx) => {
+bot.action(/^std:tone:toggle:([^:]+):(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
-  const page = Number((ctx.match as any)[1] ?? 0);
-  const selected = (ctx.session.defaults.tone ?? []) as ReplyProfile['tone'];
+  const key = (ctx.match as any)[1] as ReplyProfile["tone"][number];
+  const page = Number((ctx.match as any)[2] ?? 0);
 
-  return sendOrEditFlow(
-    ctx,
-    `Стандарт: 6) Тон (до 4)\nВыбрано: ${selected.length}/4`,
-    pickToneInline('std', page, selected)
-  );
-});
-
-bot.action(/^std:tone:done$/, async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  setMode(ctx, 'std_humanity');
-
-  const selected = ((ctx.session.defaults.humanity ??= []) as ReplyProfile['humanity']);
-  return sendOrEditFlow(
-    ctx,
-    `Стандарт: 7) Человечность (до 4)\nВыбрано: ${selected.length}/4`,
-    pickHumanityInline('std', 0, selected)
-  );
-});
-
-bot.action(/^std:tone:(?!page:|done$)(.+)$/, async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  const key = (ctx.match as any)[1] as ReplyProfile['tone'][number];
-
-  const before = ((ctx.session.defaults.tone ??= []) as ReplyProfile['tone']);
+  const before = ((ctx.session.defaults.tone ??= []) as ReplyProfile["tone"]);
   const after = toggleMulti(before, key, 4);
 
   if (before.length === after.length && !before.includes(key)) {
-    await ctx.answerCbQuery('Можно выбрать максимум 4', { show_alert: false }).catch(() => {});
+    await ctx.answerCbQuery("Можно выбрать максимум 4", { show_alert: false }).catch(() => {});
   }
 
   ctx.session.defaults.tone = after;
@@ -1014,9 +995,31 @@ bot.action(/^std:tone:(?!page:|done$)(.+)$/, async (ctx) => {
   return sendOrEditFlow(
     ctx,
     `Стандарт: 6) Тон (до 4)\nВыбрано: ${after.length}/4`,
-    pickToneInline('std', 0, after)
+    pickToneInline("std", page, after)
   );
 });
+
+bot.action(/^std:hum:toggle:([^:]+):(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const key = (ctx.match as any)[1] as ReplyProfile["humanity"][number];
+  const page = Number((ctx.match as any)[2] ?? 0);
+
+  const before = ((ctx.session.defaults.humanity ??= []) as ReplyProfile["humanity"]);
+  const after = toggleMulti(before, key, 4);
+
+  if (before.length === after.length && !before.includes(key)) {
+    await ctx.answerCbQuery("Можно выбрать максимум 4", { show_alert: false }).catch(() => {});
+  }
+
+  ctx.session.defaults.humanity = after;
+
+  return sendOrEditFlow(
+    ctx,
+    `Стандарт: 7) Человечность (до 4)\nВыбрано: ${after.length}/4`,
+    pickHumanityInline("std", page, after)
+  );
+});
+
 
 bot.action(/^std:hum:page:(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
@@ -1143,22 +1146,28 @@ bot.action(/^adv:ban:done$/, async (ctx) => {
   return sendOrEditFlow(ctx, '9) Эмоции собеседника (1 вариант):', pickEmotionInline());
 });
 
-bot.action(/^adv:ban:(?!page:|done$)(.+)$/, async (ctx) => {
+bot.action(/^adv:ban:toggle:([^:]+):(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
-  const key = (ctx.match as any)[1] as NonNullable<ReplyProfile['ban']>[number];
+  const key = (ctx.match as any)[1] as NonNullable<ReplyProfile["ban"]>[number];
+  const page = Number((ctx.match as any)[2] ?? 0);
 
   const prof = (ctx.session.draft.profile ??= {});
-  const before = ((prof.ban ??= []) as NonNullable<ReplyProfile['ban']>);
+  const before = ((prof.ban ??= []) as NonNullable<ReplyProfile["ban"]>);
   const after = toggleMulti(before, key, 4);
 
   if (before.length === after.length && !before.includes(key)) {
-    await ctx.answerCbQuery('Можно выбрать максимум 4', { show_alert: false }).catch(() => {});
+    await ctx.answerCbQuery("Можно выбрать максимум 4", { show_alert: false }).catch(() => {});
   }
 
   prof.ban = after;
 
-  return sendOrEditFlow(ctx, `8) Нельзя (до 4)\nВыбрано: ${after.length}/4`, pickBanInline(0, after));
+  return sendOrEditFlow(
+    ctx,
+    `8) Нельзя использовать (до 4)\nВыбрано: ${after.length}/4`,
+    pickBanInline(page, after)
+  );
 });
+
 
 bot.action(/^adv:emo:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});

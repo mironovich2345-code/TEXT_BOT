@@ -248,13 +248,13 @@ function buildMultiInline(
 
   const rows: Array<Array<{ text: string; callback_data: string }>> = [];
 
-  // опции
+  // опции (с ✅ и сохранением страницы)
   for (const o of slice) {
     const isOn = selected.includes(o.key);
     rows.push([
       {
         text: `${isOn ? "✅ " : ""}${o.label}`,
-        callback_data: `${prefix}:${kind}:tog:${o.key}`,
+        callback_data: `${prefix}:${kind}:toggle:${o.key}:${p}`,
       },
     ]);
   }
@@ -265,14 +265,17 @@ function buildMultiInline(
   if (p < pages - 1) nav.push({ text: "Далее ➡️", callback_data: `${prefix}:${kind}:page:${p + 1}` });
   if (nav.length) rows.push(nav);
 
-  // кнопка "готово" для выхода из выбора
-  rows.push([{ text: `✅ Готово (${selected.length}/${MAX_SELECTED})`, callback_data: `${prefix}:${kind}:done` }]);
+  // кнопка "готово"
+  rows.push([
+    { text: `✅ Готово (${selected.length}/${MAX_SELECTED})`, callback_data: `${prefix}:${kind}:done` },
+  ]);
 
   // меню
   rows.push([{ text: "🏠 В меню", callback_data: "nav:home" }]);
 
   return { reply_markup: { inline_keyboard: rows } };
 }
+
 
 // 1) Приветствие (single)
 export const pickGreetInline = (prefix: "cus" | "std") => ({
