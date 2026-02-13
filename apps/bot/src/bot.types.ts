@@ -1,5 +1,7 @@
 import type { Context } from 'telegraf';
 
+export type Mode = string;
+
 export type Greet = 'greet' | 'reply';
 
 export type Audience =
@@ -26,6 +28,7 @@ export type Goal =
   | 'congrats'
   | 'remind'
   | 'review'
+  | 'collab'
   | 'cooperate';
 
 export type ToneKey =
@@ -44,7 +47,7 @@ export type ToneKey =
   | 'ironic'
   | 'categorical'
   | 'constructive'
-  | 'apologetic';
+  | 'conciliatory';
 
 export type HumanityKey =
   | 'thanks'
@@ -56,10 +59,10 @@ export type HumanityKey =
   | 'care'
   | 'support'
   | 'tact'
-  | 'transparency'
-  | 'confidence'
-  | 'positive_end'
-  | 'choice'
+  | 'transparent'
+  | 'confident_no_pressure'
+  | 'positive_close'
+  | 'offer_choice'
   | 'next_steps';
 
 export type BanKey =
@@ -70,44 +73,36 @@ export type BanKey =
   | 'guilt'
   | 'passive_aggr'
   | 'argue'
-  | 'flattery'
-  | 'legal_threats'
+  | 'flatter'
+  | 'legal_threat'
   | 'lie'
   | 'flirt'
-  | 'compare_competitors';
+  | 'compare';
 
-export type Emotion =
-  | 'reserved'
-  | 'annoyed'
+export type EmotionKey =
+  | 'restrained'
+  | 'unhappy'
   | 'anxious'
-  | 'skeptic'
+  | 'skeptical'
   | 'hurry'
   | 'friendly';
 
-export type AnswerFormat =
-  | 'single'
-  | 'with_points'
-  | 'with_question'
-  | 'two_variants';
+export type FormatKey = 'single' | 'list' | 'question_end' | 'two_options';
 
 export interface ReplyProfile {
-  // базовые (для кнопки "Сгенерировать")
   greet: Greet;
   audience: Audience;
   formality: Formality;
   length: Length;
   goal: Goal;
-  tone: ToneKey[];       // до 4
+  tone: ToneKey[]; // до 4
   humanity: HumanityKey[]; // до 4
 
-  // расширенные (по кнопке "Расширенный вариант")
-  ban?: BanKey[];        // до 4
-  emotion?: Emotion;     // 1
-  format?: AnswerFormat; // 1
+  // advanced
+  ban?: BanKey[]; // до 4
+  emotion?: EmotionKey; // 1
+  format?: FormatKey; // 1
 }
-
-// чтобы не ловить ошибки на новых setMode — на этом этапе пусть будет string
-export type Mode = string;
 
 export interface BotSession {
   mode: Mode;
@@ -118,14 +113,10 @@ export interface BotSession {
     photoFileId?: string;
     photoCaption?: string;
 
-    // важно: это поле есть у тебя в index.ts на скрине
     useStandard?: boolean;
-
-    // именно Partial, потому что профиль набираем шагами
     profile?: Partial<ReplyProfile>;
   };
 
-  // стандарт тоже заполняется по шагам
   defaults: Partial<ReplyProfile>;
 
   variant: number;
