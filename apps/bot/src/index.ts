@@ -216,17 +216,11 @@ function escapeHtml(s: string) {
     .replace(/"/g, '&quot;');
 }
 
-// ---------- result UI (collapse/expand params) ----------
-function resultKeyboard(expanded: boolean) {
+// ---------- result UI ----------
+function resultKeyboard() {
   return {
     reply_markup: {
       inline_keyboard: [
-        [
-          {
-            text: expanded ? '🔼 Скрыть параметры' : '🔽 Показать параметры',
-            callback_data: expanded ? 'res:params:hide' : 'res:params:show',
-          },
-        ],
         [{ text: '🤔 Подумай ещё', callback_data: 'res:think' }],
         [
           { text: '👍 +', callback_data: 'res:plus' },
@@ -238,6 +232,7 @@ function resultKeyboard(expanded: boolean) {
     },
   };
 }
+
 
 function profileSummary(p: Partial<ReplyProfile>) {
   const audMap: Record<string, string> = {
@@ -428,13 +423,19 @@ function profileLabel(p: Partial<ReplyProfile>) {
   ].join('\n');
 }
 
-function buildResultHtml(answerText: string, profile: ReplyProfile, expanded: boolean) {
-  const params = expanded
-    ? `<b>Параметры:</b>\n<pre>${escapeHtml(profileLabel(profile))}</pre>`
-    : `<b>Параметры:</b>\n${escapeHtml(profileSummary(profile))}`;
+function buildParamsQuoteHtml(profile: ReplyProfile) {
+  // видимая часть в свернутом состоянии (как заголовок)
+  const summary = profileSummary(profile);
+  // раскрываемая часть
+  const details = profileLabel(profile);
 
-  return `✅ Ответ (для копирования):\n<pre>${escapeHtml(answerText)}</pre>\n\n${params}`;
+  return `<blockquote expandable>${escapeHtml(summary)}\n\n${escapeHtml(details)}</blockquote>`;
 }
+
+function buildResultHtml(answerText: string, profile: ReplyProfile) {
+  return `✅ Ответ (для копирования):\n<pre>${escapeHtml(answerText)}</pre>\n\n${buildParamsQuoteHtml(profile)}`;
+}
+
 
 function isCompleteProfile(p: Partial<ReplyProfile>) {
   const tones = Array.isArray(p.tone) ? p.tone : [];
@@ -507,25 +508,24 @@ function tryToggleLimited<T extends string>(list: T[], key: T, limit = 4): { nex
 async function rerenderResult(ctx: BotContext) {
   const text = getUiVal<string | null>(ctx, 'lastResultText', null);
   const profile = getUiVal<ReplyProfile | null>(ctx, 'lastResultProfile', null);
-  const expanded = Boolean(getUiVal(ctx, 'paramsExpanded', false));
 
   if (!text || !profile) {
     await ctx.answerCbQuery('Нет данных для отображения.', { show_alert: false }).catch(() => {});
     return;
   }
 
-  const html = buildResultHtml(text, profile, expanded);
+  const html = buildResultHtml(text, profile);
 
   try {
-    await ctx.editMessageText(html, { parse_mode: 'HTML', ...resultKeyboard(expanded) });
+    await ctx.editMessageText(html, { parse_mode: 'HTML', ...resultKeyboard() });
   } catch (e: any) {
     const desc = e?.description ?? e?.response?.description ?? e?.message ?? '';
     if (!String(desc).toLowerCase().includes('message is not modified')) {
-      // fallback (редко, но бывает если сообщение уже удалено)
-      await sendOrEditResultHTML(ctx, html, resultKeyboard(expanded));
+      await sendOrEditResultHTML(ctx, html, resultKeyboard());
     }
   }
 }
+
 
 async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
   if (!isCompleteProfile(profile)) {
@@ -538,6 +538,7 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
   if (ctx.session.trial.remaining <= 0) return showPaywall(ctx);
 
   ctx.session.trial.remaining -= 1;
+
   const tgId = ctx.from?.id;
   if (tgId) {
     await updateTrialRemaining(tgId, ctx.session.trial.remaining).catch(() => {});
@@ -548,18 +549,16 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
 
   const full = profile as ReplyProfile;
 
-  // по умолчанию параметры свернуты
-  setUiVal(ctx, 'paramsExpanded', false);
-
   try {
+    // 1) Нет ключа — stub
     if (!process.env.OPENAI_API_KEY) {
       const stub = generateReply(situation, full, ctx.session.variant);
 
       setUiVal(ctx, 'lastResultText', stub);
       setUiVal(ctx, 'lastResultProfile', full);
 
-      const html = buildResultHtml(stub, full, false);
-      await sendOrEditResultHTML(ctx, html, resultKeyboard(false));
+      const html = buildResultHtml(stub, full);
+      await sendOrEditResultHTML(ctx, html, resultKeyboard());
 
       if (tgId) {
         await logRequest({
@@ -570,28 +569,39 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
           outputTokens: 0,
           totalTokens: 0,
           variant: ctx.session.variant,
-          situationLen: (ctx.session.draft.situation ?? '').length,
+          situationLen: situation.length,
         }).catch(() => {});
       }
+
       return;
     }
 
+    // 2) OpenAI отключен в рантайме — stub
     if (OPENAI_DISABLED_RUNTIME) {
       const stub = generateReply(situation, full, ctx.session.variant);
 
       setUiVal(ctx, 'lastResultText', stub);
       setUiVal(ctx, 'lastResultProfile', full);
 
-      const html = buildResultHtml(stub, full, false);
-      await sendOrEditResultHTML(ctx, html, resultKeyboard(false));
+      const html = buildResultHtml(stub, full);
+      await sendOrEditResultHTML(ctx, html, resultKeyboard());
       return;
     }
 
+    // 3) OpenAI — нормальный путь
     const { text, usage } = await generateReplyAI({
       situation,
       profile: full,
       variant: ctx.session.variant,
     });
+
+    const finalText = text || 'Не смог сгенерировать ответ. Нажми “Подумай ещё”.';
+
+    setUiVal(ctx, 'lastResultText', finalText);
+    setUiVal(ctx, 'lastResultProfile', full);
+
+    const html = buildResultHtml(finalText, full);
+    await sendOrEditResultHTML(ctx, html, resultKeyboard());
 
     if (tgId) {
       await logRequest({
@@ -602,17 +612,10 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
         outputTokens: usage?.output_tokens ?? 0,
         totalTokens: usage?.total_tokens ?? 0,
         variant: ctx.session.variant,
-        situationLen: (ctx.session.draft.situation ?? '').length,
+        situationLen: situation.length,
       }).catch(() => {});
     }
 
-    const finalText = text || 'Не смог сгенерировать ответ. Нажми “Подумай ещё”.';
-
-    setUiVal(ctx, 'lastResultText', finalText);
-    setUiVal(ctx, 'lastResultProfile', full);
-
-    const html = buildResultHtml(finalText, full, false);
-    await sendOrEditResultHTML(ctx, html, resultKeyboard(false));
     return;
   } catch (e: any) {
     console.log('AI_ERROR', e?.message || e);
@@ -622,10 +625,12 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
     setUiVal(ctx, 'lastResultText', stub);
     setUiVal(ctx, 'lastResultProfile', full);
 
+    // 4) Регион заблокирован — фиксируем флаг и всегда уходим в stub
     if (e instanceof OpenAIRegionBlockedError) {
       OPENAI_DISABLED_RUNTIME = true;
-      const html = buildResultHtml(stub, full, false);
-      await sendOrEditResultHTML(ctx, html, resultKeyboard(false));
+
+      const html = buildResultHtml(stub, full);
+      await sendOrEditResultHTML(ctx, html, resultKeyboard());
 
       if (tgId) {
         await logRequest({
@@ -636,17 +641,21 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
           outputTokens: 0,
           totalTokens: 0,
           variant: ctx.session.variant,
-          situationLen: (ctx.session.draft.situation ?? '').length,
+          situationLen: situation.length,
         }).catch(() => {});
       }
+
       return;
     }
 
-    const html = buildResultHtml(stub, full, false);
-    await sendOrEditResultHTML(ctx, html, resultKeyboard(false));
+    // 5) Любая другая ошибка — stub
+    const html = buildResultHtml(stub, full);
+    await sendOrEditResultHTML(ctx, html, resultKeyboard());
     return;
   }
 }
+
+
 
 // -------------------- /start --------------------
 bot.start(async (ctx) => {
@@ -1354,17 +1363,6 @@ bot.action(/^adv:fmt:(.+)$/, async (ctx) => {
 });
 
 // -------------------- RESULT actions --------------------
-bot.action('res:params:show', async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  setUiVal(ctx, 'paramsExpanded', true);
-  return rerenderResult(ctx);
-});
-
-bot.action('res:params:hide', async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  setUiVal(ctx, 'paramsExpanded', false);
-  return rerenderResult(ctx);
-});
 
 bot.action('res:think', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
