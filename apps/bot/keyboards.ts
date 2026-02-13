@@ -165,7 +165,7 @@ export function pickLengthInline(prefix: 'cus' | 'std') {
 // ================= MULTI (pages + multi-select) =================
 type MultiOpt = { key: string; label: string };
 
-const PAGE_SIZE = 4;
+const PAGE_SIZE = 8;
 const MAX_SELECTED = 4;
 
 // 6) Тон (multi)
@@ -248,24 +248,37 @@ function buildMultiInline(
 
   const rows: Array<Array<{ text: string; callback_data: string }>> = [];
 
-  // опции (с ✅ и сохранением страницы)
-  for (const o of slice) {
-    const isOn = selected.includes(o.key);
-    rows.push([
+  // опции (2 колонки)
+  for (let i = 0; i < slice.length; i += 2) {
+    const left = slice[i];
+    const right = slice[i + 1];
+
+    const leftOn = selected.includes(left.key);
+    const row: Array<{ text: string; callback_data: string }> = [
       {
-        text: `${isOn ? "✅ " : ""}${o.label}`,
-        callback_data: `${prefix}:${kind}:toggle:${o.key}:${p}`,
+        text: `${leftOn ? "✅ " : ""}${left.label}`,
+        callback_data: `${prefix}:${kind}:tog:${left.key}:${p}`,
       },
-    ]);
+    ];
+
+    if (right) {
+      const rightOn = selected.includes(right.key);
+      row.push({
+        text: `${rightOn ? "✅ " : ""}${right.label}`,
+        callback_data: `${prefix}:${kind}:tog:${right.key}:${p}`,
+      });
+    }
+
+    rows.push(row);
   }
 
-  // навигация страниц
+  // навигация страниц (в одной строке)
   const nav: Array<{ text: string; callback_data: string }> = [];
-  if (p > 0) nav.push({ text: "⬅️", callback_data: `${prefix}:${kind}:page:${p - 1}` });
+  if (p > 0) nav.push({ text: "⬅️ Назад", callback_data: `${prefix}:${kind}:page:${p - 1}` });
   if (p < pages - 1) nav.push({ text: "Далее ➡️", callback_data: `${prefix}:${kind}:page:${p + 1}` });
   if (nav.length) rows.push(nav);
 
-  // кнопка "готово"
+  // готово
   rows.push([
     { text: `✅ Готово (${selected.length}/${MAX_SELECTED})`, callback_data: `${prefix}:${kind}:done` },
   ]);
@@ -275,6 +288,7 @@ function buildMultiInline(
 
   return { reply_markup: { inline_keyboard: rows } };
 }
+
 
 
 // 1) Приветствие (single)
