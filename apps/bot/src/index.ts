@@ -772,16 +772,142 @@ bot.hears(BTN_SUPPORT, async (ctx) => {
   trackBotMessage(ctx, sent.message_id);
 });
 
+
+type PlanKey = 'trial' | 'optimal' | 'maximum';
+
+function getCurrentPlan(ctx: BotContext): PlanKey {
+  // если позже начнёшь хранить plan в Airtable — сюда легко подключим
+  const v = getUiVal<string | null>(ctx, 'planType', null);
+  if (v === 'optimal' || v === 'maximum' || v === 'trial') return v;
+  return 'trial';
+}
+
+function planLimitText(ctx: BotContext, plan: PlanKey) {
+  if (plan === 'trial') return `${ctx.session.trial.remaining} бесплатных ответов`;
+  return '∞ (неограниченно)';
+}
+
+function planRenewText(ctx: BotContext, plan: PlanKey) {
+  // пока нет оплаты — показываем “—”
+  const until = getUiVal<string | null>(ctx, 'planUntil', null);
+  if (!until) return '—';
+
+  const t = new Date(until).getTime();
+  if (Number.isNaN(t)) return '—';
+
+  const diff = t - Date.now();
+  if (diff <= 0) return '0';
+
+  const days = Math.floor(diff / 86400000);
+  const hours = Math.floor((diff % 86400000) / 3600000);
+  if (days > 0) return `${days} дн ${hours} ч`;
+  return `${Math.max(hours, 1)} ч`;
+}
+
+function availableFeatures(plan: PlanKey): string[] {
+  if (plan === 'optimal') {
+    return [
+      'Генерация ответов',
+      'Обработка ситуаций или пересланных сообщений',
+      'Доступ к расширенным параметрам генерации ответов',
+      'Сохранение 1 "Стандарт ответа"',
+    ];
+  }
+  if (plan === 'maximum') {
+    return [
+      'Генерация ответов',
+      'Обработка ситуаций или пересланных сообщений',
+      'Обработка Скриншотов и Голосовых сообщений',
+      'Сохранение до 4 "Стандарт ответа"',
+      'Доступ к расширенным параметрам генерации ответов',
+    ];
+  }
+  // trial
+  return ['Генерация ответов', 'Сохранение 1 "Стандарт ответа"'];
+}
+
+function currentTariffText(ctx: BotContext) {
+  const plan = getCurrentPlan(ctx);
+
+  const name = plan === 'optimal' ? 'Оптимальный' : plan === 'maximum' ? 'Максимальный' : 'Trial';
+
+  const lines: string[] = [
+    `Текущий тариф — ${name}`,
+    `Лимит — ${planLimitText(ctx, plan)}`,
+    `Обновится через — ${planRenewText(ctx, plan)}`,
+    ``,
+    `Доступно:`,
+    ...availableFeatures(plan).map((x) => `- ${x}`),
+    ``,
+    `Улучшить тариф?`,
+  ];
+
+  return lines.join('\n');
+}
+
+function tariffChooseKeyboard() {
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: 'Оптимальный', callback_data: 'tar:plan:optimal' }],
+        [{ text: 'Максимальный', callback_data: 'tar:plan:maximum' }],
+      ],
+    },
+  };
+}
+
+function tariffPlanText(plan: PlanKey) {
+  if (plan === 'optimal') {
+    return [
+      `Тариф "Оптимальный"`,
+      `- Неограниченное количество генераций`,
+      `- Обработка ситуаций или пересланных сообщений`,
+      `- Доступ к расширенным параметрам генерации ответов`,
+      `- Стоимость 299`,
+    ].join('\n');
+  }
+
+  // maximum
+  return [
+    `Тариф "Максимальный"`,
+    `- Неограниченное количество генераций`,
+    `- Обработка ситуаций или пересланных сообщений`,
+    `- Обработка Скриншотов и Голосовых сообщений`,
+    `- Сохранение до 4 "Стандарт ответа"`,
+    `- Доступ к расширенным параметрам генерации ответов`,
+    `- Стоимость 499`,
+  ].join('\n');
+}
+
+function tariffPlanKeyboard(plan: PlanKey) {
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: 'Подключить', callback_data: `pay:connect:${plan}` }],
+        [{ text: '⬅️ Назад', callback_data: 'tar:back' }],
+      ],
+    },
+  };
+}
+
+function buildPaymentLink(plan: PlanKey, tgId: number) {
+  // На следующем шаге сделаем endpoint, который создаёт платеж ЮKassa и редиректит/возвращает ссылку.
+  // Сейчас просто готовим ссылку на твой backend.
+  const base = process.env.PAYMENT_URL_BASE ?? process.env.PUBLIC_URL;
+  if (!base) return null;
+
+  const origin = new URL(base).origin;
+  return `${origin}/pay?plan=${encodeURIComponent(plan)}&tg_id=${encodeURIComponent(String(tgId))}`;
+}
+
+
 bot.hears(BTN_TARIFF, async (ctx) => {
   await cleanupUi(ctx);
   setMode(ctx, 'tariff');
 
-  const sent = await ctx.replyWithHTML(
-    `💳 <b>Мой тариф</b>\n\nТекущий: <b>trial</b> (заглушка)\nОсталось бесплатных ответов: <b>${ctx.session.trial.remaining}</b>`,
-    tariffInline()
-  );
-  trackBotMessage(ctx, sent.message_id);
+  return sendOrEditFlow(ctx, currentTariffText(ctx), tariffChooseKeyboard());
 });
+
 
 bot.hears(BTN_PARTNER, async (ctx) => {
   await cleanupUi(ctx);
@@ -895,6 +1021,57 @@ bot.action('tar:unsubscribe', async (ctx) => {
   const sent = await ctx.reply('🚫 Отписка будет подключена позже (заглушка).', mainMenu());
   trackBotMessage(ctx, sent.message_id);
 });
+
+bot.action('tar:back', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  setMode(ctx, 'tariff');
+  return sendOrEditFlow(ctx, currentTariffText(ctx), tariffChooseKeyboard());
+});
+
+bot.action('tar:plan:optimal', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  setMode(ctx, 'tariff');
+  return sendOrEditFlow(ctx, tariffPlanText('optimal'), tariffPlanKeyboard('optimal'));
+});
+
+bot.action('tar:plan:maximum', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  setMode(ctx, 'tariff');
+  return sendOrEditFlow(ctx, tariffPlanText('maximum'), tariffPlanKeyboard('maximum'));
+});
+
+bot.action(/^pay:connect:(optimal|maximum)$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const plan = (ctx.match as any)[1] as PlanKey;
+  const tgId = ctx.from?.id;
+
+  if (!tgId) return;
+
+  const link = buildPaymentLink(plan, tgId);
+
+  if (!link) {
+    const sent = await ctx.reply(
+      'Не настроен PAYMENT_URL_BASE / PUBLIC_URL для ссылки оплаты. Добавь PUBLIC_URL (Railway domain).',
+      mainMenu()
+    );
+    trackBotMessage(ctx, sent.message_id);
+    return;
+  }
+
+  // Сейчас это “перевод” на платежку через наш будущий endpoint.
+  // На шаге ЮKassa этот endpoint будет создавать payment и отдавать реальную ссылку/redirect.
+  const sent = await ctx.reply(
+    `Перехожу к оплате тарифа “${plan === 'optimal' ? 'Оптимальный' : 'Максимальный'}”`,
+    {
+      reply_markup: {
+        inline_keyboard: [[{ text: 'Оплатить', url: link }]],
+      },
+    }
+  );
+  trackBotMessage(ctx, sent.message_id);
+});
+
+
 
 // -------------------- incoming: photo --------------------
 bot.on('photo', async (ctx) => {
