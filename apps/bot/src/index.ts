@@ -424,13 +424,10 @@ function profileLabel(p: Partial<ReplyProfile>) {
 }
 
 function buildParamsQuoteHtml(profile: ReplyProfile) {
-  // видимая часть в свернутом состоянии (как заголовок)
-  const summary = profileSummary(profile);
-  // раскрываемая часть
   const details = profileLabel(profile);
-
-  return `<blockquote expandable>${escapeHtml(summary)}\n\n${escapeHtml(details)}</blockquote>`;
+  return `<blockquote expandable>${escapeHtml(details)}</blockquote>`;
 }
+
 
 function buildResultHtml(answerText: string, profile: ReplyProfile) {
   return `✅ Ответ (для копирования):\n<pre>${escapeHtml(answerText)}</pre>\n\n${buildParamsQuoteHtml(profile)}`;
