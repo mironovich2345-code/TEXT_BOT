@@ -597,7 +597,7 @@ bot.action('st:describe', async (ctx) => {
 
   return sendOrEditFlow(
     ctx,
-    '1.1) Описать ситуацию\n1.2) Режим ожидания включён ✅\n\nПришли: текст / пересланное сообщение / скрин (лучше с подписью).',
+    'Описать ситуацию\nРежим ожидания включён ✅\n\nПришли: текст / пересланное сообщение / скрин (лучше с описанием ситуации).',
     { reply_markup: { inline_keyboard: [[{ text: '🏠 В меню', callback_data: 'nav:home' }]] } }
   );
 });
@@ -610,7 +610,7 @@ bot.action('st:set_standard', async (ctx) => {
   ctx.session.stdReturnTo = 'menu';
   setMode(ctx, 'std_greet');
 
-  return sendOrEditFlow(ctx, '1.3) Задать стандарт\n\n1) Нужно ли приветствие или сразу ответ?', pickGreetInline('std'));
+  return sendOrEditFlow(ctx, 'Задать стандарт\n\nНужно ли приветствие?', pickGreetInline('std'));
 });
 
 // -------------------- partner inline actions --------------------
