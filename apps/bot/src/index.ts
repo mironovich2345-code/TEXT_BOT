@@ -1,4 +1,6 @@
-﻿import 'dotenv/config';
+﻿// index.ts
+
+import 'dotenv/config';
 import { Telegraf, session } from 'telegraf';
 import { ensureUser } from './db/airtable';
 import { updateTrialRemaining } from './db/airtable';
@@ -120,6 +122,13 @@ function isDuplicateAction(ctx: BotContext, action: string, windowMs = 2000) {
   return false;
 }
 
+function getUiPage(ctx: BotContext, key: string): number {
+  return Number((ctx.session.ui as any)[key] ?? 0);
+}
+function setUiPage(ctx: BotContext, key: string, page: number) {
+  (ctx.session.ui as any)[key] = page;
+}
+
 function trackBotMessage(ctx: BotContext, messageId: number) {
   ctx.session.ui.botMsgIds.push(messageId);
 }
@@ -155,10 +164,18 @@ async function sendOrEditFlow(ctx: BotContext, text: string, keyboard: any) {
       const mid = (ctx.callbackQuery as any)?.message?.message_id;
       if (typeof mid === 'number') ctx.session.ui.flowMsgId = mid;
       return;
-    } catch {
-      // fallback to new message
+    } catch (e: any) {
+      const desc = e?.description ?? e?.response?.description ?? e?.message ?? '';
+      // важно: если Telegram пишет "message is not modified" — НЕ шлём новое сообщение
+      if (String(desc).toLowerCase().includes('message is not modified')) {
+        const mid = (ctx.callbackQuery as any)?.message?.message_id;
+        if (typeof mid === 'number') ctx.session.ui.flowMsgId = mid;
+        return;
+      }
+      // иначе fallback на новое сообщение
     }
   }
+
   const sent = await ctx.reply(text, keyboard);
   trackBotMessage(ctx, sent.message_id);
   ctx.session.ui.flowMsgId = sent.message_id;
@@ -175,15 +192,7 @@ function escapeHtml(s: string) {
 function isCompleteProfile(p: Partial<ReplyProfile>) {
   const tones = Array.isArray(p.tone) ? p.tone : [];
   const hums = Array.isArray(p.humanity) ? p.humanity : [];
-  return Boolean(
-    p.greet &&
-      p.audience &&
-      p.formality &&
-      p.length &&
-      p.goal &&
-      tones.length > 0 &&
-      hums.length > 0
-  );
+  return Boolean(p.greet && p.audience && p.formality && p.length && p.goal && tones.length > 0 && hums.length > 0);
 }
 
 function profileLabel(p: Partial<ReplyProfile>) {
@@ -293,13 +302,7 @@ function profileLabel(p: Partial<ReplyProfile>) {
     `Для кого: ${p.audience ? (audMap[p.audience] ?? p.audience) : '—'}`,
     `Ты/Вы: ${p.formality === 'tu' ? 'Ты' : p.formality === 'vous' ? 'Вы' : '—'}`,
     `Длина: ${
-      p.length === 'short'
-        ? 'Коротко'
-        : p.length === 'normal'
-          ? 'Средне'
-          : p.length === 'detailed'
-            ? 'Подробно'
-            : '—'
+      p.length === 'short' ? 'Коротко' : p.length === 'normal' ? 'Средне' : p.length === 'detailed' ? 'Подробно' : '—'
     }`,
     `Цель: ${p.goal ? (goalMap[p.goal] ?? p.goal) : '—'}`,
     `Тон (до 4): ${tones}`,
@@ -370,7 +373,6 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
     return sent;
   }
 
-  // trial/paywall: списываем за КАЖДЫЙ показ результата
   if (ctx.session.trial.remaining <= 0) return showPaywall(ctx);
 
   ctx.session.trial.remaining -= 1;
@@ -760,11 +762,12 @@ bot.action('as:new_custom', async (ctx) => {
   return sendOrEditFlow(ctx, '1) Нужно ли приветствие или отвечаем на вопрос?', pickGreetInline('cus'));
 });
 
-function toggleMulti<T extends string>(list: T[], key: T, limit = 4): T[] {
-  const has = list.includes(key);
-  if (has) return list.filter((x) => x !== key);
-  if (list.length >= limit) return list;
-  return [...list, key];
+// -------------------- MULTI helpers --------------------
+function tryToggleLimited<T extends string>(list: T[], key: T, limit = 4): { next: T[]; limited: boolean } {
+  const isOn = list.includes(key);
+  if (isOn) return { next: list.filter((x) => x !== key), limited: false };
+  if (list.length >= limit) return { next: list, limited: true };
+  return { next: [...list, key], limited: false };
 }
 
 // --------- CUSTOM (greet -> audience -> formality -> length -> goal -> tone(multi) -> humanity(multi) -> generate) ---------
@@ -820,88 +823,68 @@ bot.action(/^cus:goal:(.+)$/, async (ctx) => {
   prof.goal = v;
 
   setMode(ctx, 'custom_tone');
+
   const selected = (prof.tone ??= []);
-  return sendOrEditFlow(
-    ctx,
-    `6) Тон (можно до 4)\nВыбрано: ${selected.length}/4`,
-    pickToneInline('cus', 0, selected)
-  );
+  setUiPage(ctx, 'cusTonePage', 0);
+
+  return sendOrEditFlow(ctx, `6) Тон (можно до 4)\nВыбрано: ${selected.length}/4`, pickToneInline('cus', 0, selected));
 });
 
-bot.action(/^cus:tone:tog:([^:]+):(\d+)$/, async (ctx) => {
+// tone page
+bot.action(/^cus:tone:page:(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
-  const key = (ctx.match as any)[1] as ReplyProfile["tone"][number];
-  const page = Number((ctx.match as any)[2] ?? 0);
+  const page = Number((ctx.match as any)[1] ?? 0);
+  setUiPage(ctx, 'cusTonePage', page);
+
+  const selected = (ctx.session.draft.profile?.tone ?? []) as ReplyProfile['tone'];
+  return sendOrEditFlow(ctx, `6) Тон (можно до 4)\nВыбрано: ${selected.length}/4`, pickToneInline('cus', page, selected));
+});
+
+// tone toggle (поддерживает callback_data и с tog:, и без него, и с :page в конце)
+bot.action(/^cus:tone:(?!page:|done$)(?:tog:|toggle:)?([^:]+)(?::(\d+))?$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const key = (ctx.match as any)[1] as ReplyProfile['tone'][number];
+  const pageFromCb = (ctx.match as any)[2] ? Number((ctx.match as any)[2]) : undefined;
 
   const prof = (ctx.session.draft.profile ??= {});
   const before = (prof.tone ??= []);
-  const after = toggleMulti(before, key, 4);
+  const page = Number.isFinite(pageFromCb as any) ? (pageFromCb as number) : getUiPage(ctx, 'cusTonePage');
 
-  if (before.length === after.length && !before.includes(key)) {
-    await ctx.answerCbQuery("Можно выбрать максимум 4", { show_alert: false }).catch(() => {});
+  const { next, limited } = tryToggleLimited(before, key, 4);
+  if (limited) {
+    await ctx.answerCbQuery('Можно выбрать максимум 4', { show_alert: false }).catch(() => {});
+    return;
   }
 
-  prof.tone = after;
+  prof.tone = next;
+  setUiPage(ctx, 'cusTonePage', page);
 
-  return sendOrEditFlow(
-    ctx,
-    `6) Тон (можно до 4)\nВыбрано: ${after.length}/4`,
-    pickToneInline("cus", page, after)
-  );
+  return sendOrEditFlow(ctx, `6) Тон (можно до 4)\nВыбрано: ${next.length}/4`, pickToneInline('cus', page, next));
 });
 
-
-bot.action(/^cus:hum:tog:([^:]+):(\d+)$/, async (ctx) => {
+// tone done -> humanity
+bot.action(/^cus:tone:done$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
-  const key = (ctx.match as any)[1] as ReplyProfile["humanity"][number];
-  const page = Number((ctx.match as any)[2] ?? 0);
+  setMode(ctx, 'custom_humanity');
 
   const prof = (ctx.session.draft.profile ??= {});
-  const before = (prof.humanity ??= []);
-  const after = toggleMulti(before, key, 4);
-
-  if (before.length === after.length && !before.includes(key)) {
-    await ctx.answerCbQuery("Можно выбрать максимум 4", { show_alert: false }).catch(() => {});
-  }
-
-  prof.humanity = after;
+  const selected = (prof.humanity ??= []);
+  setUiPage(ctx, 'cusHumPage', 0);
 
   return sendOrEditFlow(
     ctx,
-    `7) Человечность (можно до 4)\nВыбрано: ${after.length}/4`,
-    pickHumanityInline("cus", page, after)
+    `7) Человечность (можно до 4)\nВыбрано: ${selected.length}/4`,
+    pickHumanityInline('cus', 0, selected)
   );
 });
 
-
-bot.action(/^cus:tone:toggle:([^:]+):(\d+)$/, async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  const key = (ctx.match as any)[1] as ReplyProfile["tone"][number];
-  const page = Number((ctx.match as any)[2] ?? 0);
-
-  const prof = (ctx.session.draft.profile ??= {});
-  const before = (prof.tone ??= []);
-  const after = toggleMulti(before, key, 4);
-
-  if (before.length === after.length && !before.includes(key)) {
-    await ctx.answerCbQuery("Можно выбрать максимум 4", { show_alert: false }).catch(() => {});
-  }
-
-  prof.tone = after;
-
-  return sendOrEditFlow(
-    ctx,
-    `6) Тон (можно до 4)\nВыбрано: ${after.length}/4`,
-    pickToneInline("cus", page, after)
-  );
-});
-
-
+// humanity page
 bot.action(/^cus:hum:page:(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const page = Number((ctx.match as any)[1] ?? 0);
-  const selected = (ctx.session.draft.profile?.humanity ?? []) as ReplyProfile['humanity'];
+  setUiPage(ctx, 'cusHumPage', page);
 
+  const selected = (ctx.session.draft.profile?.humanity ?? []) as ReplyProfile['humanity'];
   return sendOrEditFlow(
     ctx,
     `7) Человечность (можно до 4)\nВыбрано: ${selected.length}/4`,
@@ -909,6 +892,33 @@ bot.action(/^cus:hum:page:(\d+)$/, async (ctx) => {
   );
 });
 
+// humanity toggle
+bot.action(/^cus:hum:(?!page:|done$)(?:tog:|toggle:)?([^:]+)(?::(\d+))?$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const key = (ctx.match as any)[1] as ReplyProfile['humanity'][number];
+  const pageFromCb = (ctx.match as any)[2] ? Number((ctx.match as any)[2]) : undefined;
+
+  const prof = (ctx.session.draft.profile ??= {});
+  const before = (prof.humanity ??= []);
+  const page = Number.isFinite(pageFromCb as any) ? (pageFromCb as number) : getUiPage(ctx, 'cusHumPage');
+
+  const { next, limited } = tryToggleLimited(before, key, 4);
+  if (limited) {
+    await ctx.answerCbQuery('Можно выбрать максимум 4', { show_alert: false }).catch(() => {});
+    return;
+  }
+
+  prof.humanity = next;
+  setUiPage(ctx, 'cusHumPage', page);
+
+  return sendOrEditFlow(
+    ctx,
+    `7) Человечность (можно до 4)\nВыбрано: ${next.length}/4`,
+    pickHumanityInline('cus', page, next)
+  );
+});
+
+// humanity done -> generate
 bot.action(/^cus:hum:done$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   setMode(ctx, 'pre_generate');
@@ -919,29 +929,6 @@ bot.action(/^cus:hum:done$/, async (ctx) => {
     generateInline()
   );
 });
-
-bot.action(/^cus:hum:toggle:([^:]+):(\d+)$/, async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  const key = (ctx.match as any)[1] as ReplyProfile["humanity"][number];
-  const page = Number((ctx.match as any)[2] ?? 0);
-
-  const prof = (ctx.session.draft.profile ??= {});
-  const before = (prof.humanity ??= []);
-  const after = toggleMulti(before, key, 4);
-
-  if (before.length === after.length && !before.includes(key)) {
-    await ctx.answerCbQuery("Можно выбрать максимум 4", { show_alert: false }).catch(() => {});
-  }
-
-  prof.humanity = after;
-
-  return sendOrEditFlow(
-    ctx,
-    `7) Человечность (можно до 4)\nВыбрано: ${after.length}/4`,
-    pickHumanityInline("cus", page, after)
-  );
-});
-
 
 // --------- STANDARD (то же самое, но пишем в defaults) ---------
 bot.action(/^std:greet:(.+)$/, async (ctx) => {
@@ -991,7 +978,10 @@ bot.action(/^std:goal:(.+)$/, async (ctx) => {
   ctx.session.defaults.goal = v;
 
   setMode(ctx, 'std_tone');
+
   const selected = ((ctx.session.defaults.tone ??= []) as ReplyProfile['tone']);
+  setUiPage(ctx, 'stdTonePage', 0);
+
   return sendOrEditFlow(
     ctx,
     `Стандарт: 6) Тон (до 4)\nВыбрано: ${selected.length}/4`,
@@ -999,56 +989,67 @@ bot.action(/^std:goal:(.+)$/, async (ctx) => {
   );
 });
 
-bot.action(/^std:tone:tog:([^:]+):(\d+)$/, async (ctx) => {
+// std tone page
+bot.action(/^std:tone:page:(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
-  const key = (ctx.match as any)[1] as ReplyProfile["tone"][number];
-  const page = Number((ctx.match as any)[2] ?? 0);
+  const page = Number((ctx.match as any)[1] ?? 0);
+  setUiPage(ctx, 'stdTonePage', page);
 
-  const before = ((ctx.session.defaults.tone ??= []) as ReplyProfile["tone"]);
-  const after = toggleMulti(before, key, 4);
-
-  if (before.length === after.length && !before.includes(key)) {
-    await ctx.answerCbQuery("Можно выбрать максимум 4", { show_alert: false }).catch(() => {});
-  }
-
-  ctx.session.defaults.tone = after;
-
+  const selected = (ctx.session.defaults.tone ?? []) as ReplyProfile['tone'];
   return sendOrEditFlow(
     ctx,
-    `Стандарт: 6) Тон (до 4)\nВыбрано: ${after.length}/4`,
-    pickToneInline("std", page, after)
+    `Стандарт: 6) Тон (до 4)\nВыбрано: ${selected.length}/4`,
+    pickToneInline('std', page, selected)
   );
 });
 
-
-bot.action(/^std:hum:tog:([^:]+):(\d+)$/, async (ctx) => {
+// std tone toggle
+bot.action(/^std:tone:(?!page:|done$)(?:tog:|toggle:)?([^:]+)(?::(\d+))?$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
-  const key = (ctx.match as any)[1] as ReplyProfile["humanity"][number];
-  const page = Number((ctx.match as any)[2] ?? 0);
+  const key = (ctx.match as any)[1] as ReplyProfile['tone'][number];
+  const pageFromCb = (ctx.match as any)[2] ? Number((ctx.match as any)[2]) : undefined;
 
-  const before = ((ctx.session.defaults.humanity ??= []) as ReplyProfile["humanity"]);
-  const after = toggleMulti(before, key, 4);
+  const before = ((ctx.session.defaults.tone ??= []) as ReplyProfile['tone']);
+  const page = Number.isFinite(pageFromCb as any) ? (pageFromCb as number) : getUiPage(ctx, 'stdTonePage');
 
-  if (before.length === after.length && !before.includes(key)) {
-    await ctx.answerCbQuery("Можно выбрать максимум 4", { show_alert: false }).catch(() => {});
+  const { next, limited } = tryToggleLimited(before, key, 4);
+  if (limited) {
+    await ctx.answerCbQuery('Можно выбрать максимум 4', { show_alert: false }).catch(() => {});
+    return;
   }
 
-  ctx.session.defaults.humanity = after;
+  ctx.session.defaults.tone = next;
+  setUiPage(ctx, 'stdTonePage', page);
 
   return sendOrEditFlow(
     ctx,
-    `Стандарт: 7) Человечность (до 4)\nВыбрано: ${after.length}/4`,
-    pickHumanityInline("std", page, after)
+    `Стандарт: 6) Тон (до 4)\nВыбрано: ${next.length}/4`,
+    pickToneInline('std', page, next)
   );
 });
 
+// std tone done -> humanity
+bot.action(/^std:tone:done$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  setMode(ctx, 'std_humanity');
 
+  const selected = ((ctx.session.defaults.humanity ??= []) as ReplyProfile['humanity']);
+  setUiPage(ctx, 'stdHumPage', 0);
 
+  return sendOrEditFlow(
+    ctx,
+    `Стандарт: 7) Человечность (до 4)\nВыбрано: ${selected.length}/4`,
+    pickHumanityInline('std', 0, selected)
+  );
+});
+
+// std hum page
 bot.action(/^std:hum:page:(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const page = Number((ctx.match as any)[1] ?? 0);
-  const selected = (ctx.session.defaults.humanity ?? []) as ReplyProfile['humanity'];
+  setUiPage(ctx, 'stdHumPage', page);
 
+  const selected = (ctx.session.defaults.humanity ?? []) as ReplyProfile['humanity'];
   return sendOrEditFlow(
     ctx,
     `Стандарт: 7) Человечность (до 4)\nВыбрано: ${selected.length}/4`,
@@ -1056,6 +1057,32 @@ bot.action(/^std:hum:page:(\d+)$/, async (ctx) => {
   );
 });
 
+// std hum toggle
+bot.action(/^std:hum:(?!page:|done$)(?:tog:|toggle:)?([^:]+)(?::(\d+))?$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const key = (ctx.match as any)[1] as ReplyProfile['humanity'][number];
+  const pageFromCb = (ctx.match as any)[2] ? Number((ctx.match as any)[2]) : undefined;
+
+  const before = ((ctx.session.defaults.humanity ??= []) as ReplyProfile['humanity']);
+  const page = Number.isFinite(pageFromCb as any) ? (pageFromCb as number) : getUiPage(ctx, 'stdHumPage');
+
+  const { next, limited } = tryToggleLimited(before, key, 4);
+  if (limited) {
+    await ctx.answerCbQuery('Можно выбрать максимум 4', { show_alert: false }).catch(() => {});
+    return;
+  }
+
+  ctx.session.defaults.humanity = next;
+  setUiPage(ctx, 'stdHumPage', page);
+
+  return sendOrEditFlow(
+    ctx,
+    `Стандарт: 7) Человечность (до 4)\nВыбрано: ${next.length}/4`,
+    pickHumanityInline('std', page, next)
+  );
+});
+
+// std hum done (сохранение стандарта)
 bot.action(/^std:hum:done$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
 
@@ -1082,25 +1109,6 @@ bot.action(/^std:hum:done$/, async (ctx) => {
   });
 
   return showResult(ctx, ctx.session.defaults);
-});
-
-bot.action(/^std:hum:(?!page:|done$)(.+)$/, async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  const key = (ctx.match as any)[1] as ReplyProfile['humanity'][number];
-
-  const before = ((ctx.session.defaults.humanity ??= []) as ReplyProfile['humanity']);
-  const after = toggleMulti(before, key, 4);
-
-  if (before.length === after.length && !before.includes(key)) {
-    await ctx.answerCbQuery('Можно выбрать максимум 4', { show_alert: false }).catch(() => {});
-  }
-
-  ctx.session.defaults.humanity = after;
-  return sendOrEditFlow(
-    ctx,
-    `Стандарт: 7) Человечность (до 4)\nВыбрано: ${after.length}/4`,
-    pickHumanityInline('std', 0, after)
-  );
 });
 
 // --------- GENERATE + ADVANCED ---------
@@ -1152,61 +1160,49 @@ bot.action('gen:adv', async (ctx) => {
   prof.ban ??= [];
 
   setMode(ctx, 'adv_ban');
+  setUiPage(ctx, 'advBanPage', 0);
+
   const selected = prof.ban;
   return sendOrEditFlow(ctx, `8) Нельзя (до 4)\nВыбрано: ${selected.length}/4`, pickBanInline(0, selected));
 });
 
-bot.action(/^adv:ban:tog:([^:]+):(\d+)$/, async (ctx) => {
+// adv ban page
+bot.action(/^adv:ban:page:(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
-  const key = (ctx.match as any)[1] as NonNullable<ReplyProfile["ban"]>[number];
-  const page = Number((ctx.match as any)[2] ?? 0);
+  const page = Number((ctx.match as any)[1] ?? 0);
+  setUiPage(ctx, 'advBanPage', page);
 
-  const prof = (ctx.session.draft.profile ??= {});
-  const before = ((prof.ban ??= []) as NonNullable<ReplyProfile["ban"]>);
-  const after = toggleMulti(before, key, 4);
-
-  if (before.length === after.length && !before.includes(key)) {
-    await ctx.answerCbQuery("Можно выбрать максимум 4", { show_alert: false }).catch(() => {});
-  }
-
-  prof.ban = after;
-
-  return sendOrEditFlow(
-    ctx,
-    `8) Нельзя (до 4)\nВыбрано: ${after.length}/4`,
-    pickBanInline(page, after)
-  );
+  const selected = (ctx.session.draft.profile?.ban ?? []) as NonNullable<ReplyProfile['ban']>;
+  return sendOrEditFlow(ctx, `8) Нельзя (до 4)\nВыбрано: ${selected.length}/4`, pickBanInline(page, selected));
 });
 
+// adv ban toggle
+bot.action(/^adv:ban:(?!page:|done$)(?:tog:|toggle:)?([^:]+)(?::(\d+))?$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const key = (ctx.match as any)[1] as NonNullable<ReplyProfile['ban']>[number];
+  const pageFromCb = (ctx.match as any)[2] ? Number((ctx.match as any)[2]) : undefined;
+
+  const prof = (ctx.session.draft.profile ??= {});
+  const before = ((prof.ban ??= []) as NonNullable<ReplyProfile['ban']>);
+  const page = Number.isFinite(pageFromCb as any) ? (pageFromCb as number) : getUiPage(ctx, 'advBanPage');
+
+  const { next, limited } = tryToggleLimited(before, key, 4);
+  if (limited) {
+    await ctx.answerCbQuery('Можно выбрать максимум 4', { show_alert: false }).catch(() => {});
+    return;
+  }
+
+  prof.ban = next;
+  setUiPage(ctx, 'advBanPage', page);
+
+  return sendOrEditFlow(ctx, `8) Нельзя (до 4)\nВыбрано: ${next.length}/4`, pickBanInline(page, next));
+});
 
 bot.action(/^adv:ban:done$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   setMode(ctx, 'adv_emotion');
   return sendOrEditFlow(ctx, '9) Эмоции собеседника (1 вариант):', pickEmotionInline());
 });
-
-bot.action(/^adv:ban:toggle:([^:]+):(\d+)$/, async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  const key = (ctx.match as any)[1] as NonNullable<ReplyProfile["ban"]>[number];
-  const page = Number((ctx.match as any)[2] ?? 0);
-
-  const prof = (ctx.session.draft.profile ??= {});
-  const before = ((prof.ban ??= []) as NonNullable<ReplyProfile["ban"]>);
-  const after = toggleMulti(before, key, 4);
-
-  if (before.length === after.length && !before.includes(key)) {
-    await ctx.answerCbQuery("Можно выбрать максимум 4", { show_alert: false }).catch(() => {});
-  }
-
-  prof.ban = after;
-
-  return sendOrEditFlow(
-    ctx,
-    `8) Нельзя использовать (до 4)\nВыбрано: ${after.length}/4`,
-    pickBanInline(page, after)
-  );
-});
-
 
 bot.action(/^adv:emo:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
