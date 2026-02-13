@@ -1,14 +1,14 @@
 ﻿import 'dotenv/config';
 import { Telegraf, session } from 'telegraf';
-import { ensureUser } from "./db/airtable";
-import { updateTrialRemaining } from "./db/airtable";
-import { logRequest } from "./db/airtable";
-import http from "node:http";
-
+import { ensureUser } from './db/airtable';
+import { updateTrialRemaining } from './db/airtable';
+import { logRequest } from './db/airtable';
+import http from 'node:http';
 
 import type { BotContext, BotSession, Mode, ReplyProfile } from './bot.types';
 import { generateReplyAI } from './ai/openai';
-import { OpenAIRegionBlockedError } from "./ai/openai";
+import { OpenAIRegionBlockedError } from './ai/openai';
+
 import {
   mainMenu,
   navMenu,
@@ -17,13 +17,20 @@ import {
   resultInline,
   tariffInline,
   partnerInline,
+
+  pickGreetInline,
   pickAudienceInline,
   pickFormalityInline,
   pickLengthInline,
   pickGoalInline,
   pickToneInline,
-  pickBanInline,
   pickHumanityInline,
+
+  pickBanInline,
+  pickEmotionInline,
+  pickFormatInline,
+  generateInline,
+
   BTN_START,
   BTN_SUPPORT,
   BTN_TARIFF,
@@ -34,23 +41,19 @@ import {
 
 let OPENAI_DISABLED_RUNTIME = false;
 
-
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) throw new Error('BOT_TOKEN is missing in .env');
 
 const bot = new Telegraf<BotContext>(BOT_TOKEN);
-bot.catch((err) => console.error("BOT_ERROR", err));
-process.on("unhandledRejection", (e) => console.error("UNHANDLED_REJECTION", e));
-process.on("uncaughtException", (e) => console.error("UNCAUGHT_EXCEPTION", e));
 
-bot.catch((err, ctx) => {
-  console.error("BOT_ERROR", err);
-});
+bot.catch((err) => console.error('BOT_ERROR', err));
+process.on('unhandledRejection', (e) => console.error('UNHANDLED_REJECTION', e));
+process.on('uncaughtException', (e) => console.error('UNCAUGHT_EXCEPTION', e));
 
 bot.use(async (ctx, next) => {
   const text = (ctx.message as any)?.text;
-  if (text) console.log("IN_TEXT:", text);
-  else console.log("IN_UPDATE:", ctx.updateType);
+  if (text) console.log('IN_TEXT:', text);
+  else console.log('IN_UPDATE:', ctx.updateType);
   return next();
 });
 
@@ -169,16 +172,171 @@ function escapeHtml(s: string) {
     .replace(/"/g, '&quot;');
 }
 
-function isCompleteProfile(p: ReplyProfile) {
+function isCompleteProfile(p: Partial<ReplyProfile>) {
+  const tones = Array.isArray(p.tone) ? p.tone : [];
+  const hums = Array.isArray(p.humanity) ? p.humanity : [];
   return Boolean(
-    p.audience &&
+    p.greet &&
+      p.audience &&
       p.formality &&
       p.length &&
       p.goal &&
-      p.tone &&
-      p.ban &&
-      p.humanity
+      tones.length > 0 &&
+      hums.length > 0
   );
+}
+
+function profileLabel(p: Partial<ReplyProfile>) {
+  const audMap: Record<string, string> = {
+    boss: 'Выше меня (Руководитель)',
+    peer: 'Равный (Коллега/партнёр)',
+    subordinate: 'Ниже меня (Подчинённый)',
+    service: 'Сервис (Покупаю/продаю)',
+    personal: 'Личное (Отношения)',
+    other: 'Другое',
+  };
+
+  const greetMap: Record<string, string> = {
+    greet: 'Приветствие',
+    reply: 'Сразу ответ',
+  };
+
+  const goalMap: Record<string, string> = {
+    sell: 'Продажа',
+    ask: 'Просьба',
+    apologize: 'Извинение',
+    clarify: 'Уточнение',
+    refuse: 'Отказ',
+    buy: 'Покупка',
+    handle_negative: 'Отработка негатива',
+    support: 'Поддержка',
+    congrats: 'Поздравление',
+    remind: 'Напоминание',
+    review: 'Отзыв',
+    collab: 'Сотрудничество',
+    cooperate: 'Сотрудничество',
+  };
+
+  const toneMap: Record<string, string> = {
+    neutral: 'Нейтрально',
+    friendly: 'Дружелюбно',
+    business: 'Деловой',
+    firm: 'Жёстко',
+    polite_pushy: 'Вежливо-настойчиво',
+    polite_soft: 'Вежливо (мягко)',
+    confident: 'Уверенно',
+    calm: 'Спокойно',
+    supportive: 'Поддерживающе',
+    positive: 'Позитивно',
+    official: 'Официально',
+    informal: 'Неформально',
+    ironic: 'Иронично (лёгкий юмор)',
+    categorical: 'Категорично (без грубости)',
+    constructive: 'Конструктивно',
+    conciliatory: 'Извиняюще/примирительно',
+  };
+
+  const humMap: Record<string, string> = {
+    thanks: 'Благодарность',
+    compliment: 'Комплимент',
+    humor: 'Лёгкий юмор',
+    strict: 'Строго по делу',
+    empathy: 'Эмпатия',
+    apology: 'Извинение (если уместно)',
+    care: 'Забота',
+    support: 'Поддержка',
+    tact: 'Тактичность / деликатность',
+    transparent: 'Прозрачность (“скажу честно…”)',
+    confident_no_pressure: 'Уверенность без давления',
+    positive_close: 'Позитивное завершение',
+    offer_choice: 'Предложение выбора',
+    next_steps: 'Чёткие следующие шаги',
+  };
+
+  const banMap: Record<string, string> = {
+    promise: 'Не обещать',
+    pressure: 'Не давить',
+    discounts: 'Без скидок/торга',
+    personal: 'Без личного',
+    guilt: 'Без вины/стыда',
+    passive_aggr: 'Без пассивной агрессии',
+    argue: 'Не спорить/не конфликтовать',
+    flatter: 'Без чрезмерной лести',
+    legal_threat: 'Без юр. угроз',
+    lie: 'Без лжи/приукрашивания',
+    flirt: 'Без флирта',
+    compare: 'Не сравнивать с конкурентами',
+  };
+
+  const emoMap: Record<string, string> = {
+    restrained: 'Сдержан',
+    unhappy: 'Недоволен',
+    anxious: 'Тревожится',
+    skeptical: 'Скептичен',
+    hurry: 'Торопит',
+    friendly: 'Дружелюбен',
+  };
+
+  const fmtMap: Record<string, string> = {
+    single: 'Одно сообщение',
+    list: 'Сообщение + список пунктов',
+    question_end: 'Сообщение + вопрос в конце',
+    two_options: 'Сообщение + 2 варианта решения',
+  };
+
+  const tones = (p.tone ?? []).map((k) => toneMap[k] ?? k).join(', ') || '—';
+  const hums = (p.humanity ?? []).map((k) => humMap[k] ?? k).join(', ') || '—';
+  const bans = (p.ban ?? []).map((k) => banMap[k] ?? k).join(', ') || '—';
+
+  return [
+    `Приветствие: ${p.greet ? (greetMap[p.greet] ?? p.greet) : '—'}`,
+    `Для кого: ${p.audience ? (audMap[p.audience] ?? p.audience) : '—'}`,
+    `Ты/Вы: ${p.formality === 'tu' ? 'Ты' : p.formality === 'vous' ? 'Вы' : '—'}`,
+    `Длина: ${
+      p.length === 'short'
+        ? 'Коротко'
+        : p.length === 'normal'
+          ? 'Средне'
+          : p.length === 'detailed'
+            ? 'Подробно'
+            : '—'
+    }`,
+    `Цель: ${p.goal ? (goalMap[p.goal] ?? p.goal) : '—'}`,
+    `Тон (до 4): ${tones}`,
+    `Человечность (до 4): ${hums}`,
+    `Нельзя (adv, до 4): ${bans}`,
+    `Эмоции (adv): ${p.emotion ? (emoMap[p.emotion] ?? p.emotion) : '—'}`,
+    `Формат (adv): ${p.format ? (fmtMap[p.format] ?? p.format) : '—'}`,
+  ].join('\n');
+}
+
+function generateReply(situation: string, profile: ReplyProfile, variant: number) {
+  const tones = profile.tone ?? [];
+  const mainTone = tones[0] ?? 'neutral';
+
+  const form = profile.formality === 'tu' ? 'ты' : 'вы';
+
+  const opener =
+    profile.greet === 'reply'
+      ? ''
+      : mainTone === 'friendly'
+        ? form === 'вы'
+          ? 'Здравствуйте!'
+          : 'Привет!'
+        : mainTone === 'business' || mainTone === 'official'
+          ? 'Добрый день.'
+          : 'Здравствуйте.';
+
+  const base = `Ситуация: “${situation}”.`;
+  const prefix = opener ? `${opener} ` : '';
+
+  const variants = [
+    `${prefix}${base} Предлагаю такой ответ: ...`,
+    `${prefix}${base} Можно ответить так: ...`,
+    `${prefix}${base} Вариант ответа: ...`,
+  ];
+
+  return variants[variant % variants.length];
 }
 
 function extractForwardedText(ctx: BotContext): string | null {
@@ -195,85 +353,6 @@ function extractForwardedText(ctx: BotContext): string | null {
   return isForward ? text : null;
 }
 
-function profileLabel(p: ReplyProfile) {
-  const aud =
-    p.audience === 'boss' ? 'Руководитель' :
-    p.audience === 'client' ? 'Клиент' :
-    p.audience === 'personal' ? 'Личное' : '—';
-
-  const form = p.formality === 'tu' ? 'Ты' : p.formality === 'vous' ? 'Вы' : '—';
-  const len =
-    p.length === 'short' ? 'Коротко' :
-    p.length === 'normal' ? 'Средне' :
-    p.length === 'detailed' ? 'Подробно' : '—';
-
-  const goal =
-    p.goal === 'ask' ? 'Просьба' :
-    p.goal === 'sell' ? 'Продажа' :
-    p.goal === 'apologize' ? 'Извиниться' :
-    p.goal === 'clarify' ? 'Уточнить' :
-    p.goal === 'refuse' ? 'Отказ' : '—';
-
-  const tone =
-    p.tone === 'neutral' ? 'Нейтрально' :
-    p.tone === 'friendly' ? 'Дружелюбно' :
-    p.tone === 'business' ? 'Делово' :
-    p.tone === 'firm' ? 'Жёстко' :
-    p.tone === 'polite_pushy' ? 'Вежливо-настойчиво' : '—';
-
-  const ban =
-    p.ban === 'promise' ? 'Не обещать' :
-    p.ban === 'pressure' ? 'Не давить' :
-    p.ban === 'discounts' ? 'Без скидок' :
-    p.ban === 'personal' ? 'Без личного' : '—';
-
-  const hum =
-    p.humanity === 'thanks' ? 'Благодарность' :
-    p.humanity === 'compliment' ? 'Комплимент' :
-    p.humanity === 'humor' ? 'Юмор' :
-    p.humanity === 'strict' ? 'Строго по делу' : '—';
-
-  return `Для кого: ${aud}\nТы/Вы: ${form}\nДлина: ${len}\nЦель: ${goal}\nТон: ${tone}\nНельзя: ${ban}\nЧеловечность: ${hum}`;
-}
-
-function generateReply(situation: string, profile: ReplyProfile, variant: number) {
-  const form = profile.formality === 'tu' ? 'ты' : 'вы';
-  const opener =
-    profile.tone === 'friendly' ? (form === 'вы' ? 'Здравствуйте!' : 'Привет!') :
-    profile.tone === 'business' ? 'Добрый день.' :
-    profile.tone === 'polite_pushy' ? 'Здравствуйте.' :
-    profile.tone === 'firm' ? (form === 'вы' ? 'Здравствуйте.' : 'Привет.') :
-    'Здравствуйте.';
-
-  const goalHint =
-    profile.goal === 'ask' ? 'хочу попросить' :
-    profile.goal === 'sell' ? 'хочу предложить' :
-    profile.goal === 'apologize' ? 'хочу извиниться' :
-    profile.goal === 'clarify' ? 'хочу уточнить' :
-    'хочу сообщить';
-
-  const banHint =
-    profile.ban === 'promise' ? 'без обещаний' :
-    profile.ban === 'pressure' ? 'без давления' :
-    profile.ban === 'discounts' ? 'без скидок' :
-    'без личного';
-
-  const humHint =
-    profile.humanity === 'thanks' ? 'Добавь благодарность.' :
-    profile.humanity === 'compliment' ? 'Добавь лёгкий комплимент.' :
-    profile.humanity === 'humor' ? 'Добавь лёгкий уместный юмор.' :
-    'Строго по делу.';
-
-  const base = `Ситуация: “${situation}”.`;
-  const variants = [
-    `${opener} ${base} ${goalHint}. ${banHint}. ${humHint} Давайте согласуем следующий шаг.`,
-    `${opener} ${base} ${goalHint}. ${humHint} Прошу ответить, когда будет удобно.`,
-    `${opener} ${base} ${goalHint}. ${banHint}. ${humHint} Жду вашего ответа.`,
-    `${opener} ${base} ${goalHint}. ${humHint} Если есть детали — напишите, пожалуйста.`,
-  ];
-  return variants[variant % variants.length];
-}
-
 async function showPaywall(ctx: BotContext) {
   setMode(ctx, 'menu');
   const sent = await ctx.reply(
@@ -284,151 +363,138 @@ async function showPaywall(ctx: BotContext) {
   return sent;
 }
 
-async function showResult(ctx: BotContext, profile: ReplyProfile) {
-  // trial/paywall: списываем за КАЖДЫЙ показ результата
-if (ctx.session.trial.remaining <= 0) return showPaywall(ctx);
-
-ctx.session.trial.remaining -= 1;
-
-const tgId = ctx.from?.id;
-if (tgId) {
-  await updateTrialRemaining(tgId, ctx.session.trial.remaining).catch(() => {});
-}
-
-  const situation = ctx.session.draft.situation ?? '';
-  setMode(ctx, 'result'); // <— ВАЖНО: иначе res:* кнопки не работают
-
-if (OPENAI_DISABLED_RUNTIME) {
-  // сразу заглушка
-}
-
-try {
-  if (!process.env.OPENAI_API_KEY) {
-    // fallback на заглушку
-    const stub = generateReply(situation, profile, ctx.session.variant);
-    const html =
-      `✅ Ответ (для копирования):\n` +
-      `<pre>${escapeHtml(stub)}</pre>\n\n` +
-      `<b>Параметры:</b>\n<pre>${escapeHtml(profileLabel(profile))}</pre>`;
-    const sent = await ctx.replyWithHTML(html, resultInline());
+async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
+  if (!isCompleteProfile(profile)) {
+    const sent = await ctx.reply('Не все параметры выбраны. Пройди шаги ещё раз.', mainMenu());
     trackBotMessage(ctx, sent.message_id);
-    ctx.session.ui.resultMsgId = sent.message_id;
-    const tgId = ctx.from?.id;
-if (tgId) {
-  await logRequest({
-    tgId,
-    createdAt: new Date(),
-    model: "stub",
-    inputTokens: 0,
-    outputTokens: 0,
-    totalTokens: 0,
-    variant: ctx.session.variant,
-    situationLen: (ctx.session.draft.situation ?? "").length,
-  });
-}
-
     return sent;
   }
 
-if (OPENAI_DISABLED_RUNTIME) {
-  const stub = generateReply(situation, profile, ctx.session.variant);
-  const html =
-    `⚠️ ИИ сейчас отключён (403 по региону/сети). Черновик:\n` +
-    `<pre>${escapeHtml(stub)}</pre>\n\n` +
-    `<b>Параметры:</b>\n<pre>${escapeHtml(profileLabel(profile))}</pre>`;
-  const sent = await ctx.replyWithHTML(html, resultInline());
-  trackBotMessage(ctx, sent.message_id);
-  ctx.session.ui.resultMsgId = sent.message_id;
-  return sent;
-}
+  // trial/paywall: списываем за КАЖДЫЙ показ результата
+  if (ctx.session.trial.remaining <= 0) return showPaywall(ctx);
 
-  const { text, usage } = await generateReplyAI({
-    situation,
-    profile,
-    variant: ctx.session.variant,
-  });
-const tgId = ctx.from?.id;
-if (tgId) {
-  await logRequest({
-    tgId,
-    createdAt: new Date(),
-    model: process.env.OPENAI_MODEL || "gpt-4o-mini",
-    inputTokens: usage?.input_tokens ?? 0,
-    outputTokens: usage?.output_tokens ?? 0,
-    totalTokens: usage?.total_tokens ?? 0,
-    variant: ctx.session.variant,
-    situationLen: (ctx.session.draft.situation ?? "").length,
-  }).catch(() => {});
-}
-
-  if (usage) {
-    console.log(
-      JSON.stringify({
-        ts: new Date().toISOString(),
-        name: "ai_usage",
-        userId: ctx.from?.id,
-        input_tokens: usage.input_tokens,
-        output_tokens: usage.output_tokens,
-        total_tokens: usage.total_tokens,
-      })
-    );
-    
+  ctx.session.trial.remaining -= 1;
+  const tgId = ctx.from?.id;
+  if (tgId) {
+    await updateTrialRemaining(tgId, ctx.session.trial.remaining).catch(() => {});
   }
 
-  const finalText = text || "Не смог сгенерировать ответ. Нажми “Подумай ещё”.";
-  const html =
-    `✅ Ответ (для копирования):\n` +
-    `<pre>${escapeHtml(finalText)}</pre>\n\n` +
-    `<b>Параметры:</b>\n<pre>${escapeHtml(profileLabel(profile))}</pre>`;
+  const situation = ctx.session.draft.situation ?? '';
+  setMode(ctx, 'result');
 
-  const sent = await ctx.replyWithHTML(html, resultInline());
-  trackBotMessage(ctx, sent.message_id);
-  ctx.session.ui.resultMsgId = sent.message_id;
-  return sent;
-} catch (e: any) {
-  console.log("AI_ERROR", e?.message || e);
-  
-if (e instanceof OpenAIRegionBlockedError) {
-  OPENAI_DISABLED_RUNTIME = true;
+  const full = profile as ReplyProfile;
 
-  const stub = generateReply(situation, profile, ctx.session.variant);
-  const html =
-    `⚠️ ИИ недоступен в текущем регионе/сети (403). Я временно переключился на черновик:\n` +
-    `<pre>${escapeHtml(stub)}</pre>\n\n` +
-    `<b>Параметры:</b>\n<pre>${escapeHtml(profileLabel(profile))}</pre>`;
+  try {
+    if (!process.env.OPENAI_API_KEY) {
+      const stub = generateReply(situation, full, ctx.session.variant);
+      const html =
+        `✅ Ответ (для копирования):\n` +
+        `<pre>${escapeHtml(stub)}</pre>\n\n` +
+        `<b>Параметры:</b>\n<pre>${escapeHtml(profileLabel(full))}</pre>`;
+      const sent = await ctx.replyWithHTML(html, resultInline());
+      trackBotMessage(ctx, sent.message_id);
+      ctx.session.ui.resultMsgId = sent.message_id;
 
-  const sent = await ctx.replyWithHTML(html, resultInline());
-  trackBotMessage(ctx, sent.message_id);
-  ctx.session.ui.resultMsgId = sent.message_id;
-  const tgId = ctx.from?.id;
-if (tgId) {
-  await logRequest({
-    tgId,
-    createdAt: new Date(),
-    model: "region_blocked_stub",
-    inputTokens: 0,
-    outputTokens: 0,
-    totalTokens: 0,
-    variant: ctx.session.variant,
-    situationLen: (ctx.session.draft.situation ?? "").length,
-  }).catch(() => {});
-}
+      if (tgId) {
+        await logRequest({
+          tgId,
+          createdAt: new Date(),
+          model: 'stub',
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          variant: ctx.session.variant,
+          situationLen: (ctx.session.draft.situation ?? '').length,
+        }).catch(() => {});
+      }
 
-  return sent;
-}
+      return sent;
+    }
 
-  const stub = generateReply(situation, profile, ctx.session.variant);
-  const html =
-    `⚠️ ИИ временно недоступен, показал черновик:\n` +
-    `<pre>${escapeHtml(stub)}</pre>\n\n` +
-    `<b>Параметры:</b>\n<pre>${escapeHtml(profileLabel(profile))}</pre>`;
+    if (OPENAI_DISABLED_RUNTIME) {
+      const stub = generateReply(situation, full, ctx.session.variant);
+      const html =
+        `⚠️ ИИ сейчас отключён (403 по региону/сети). Черновик:\n` +
+        `<pre>${escapeHtml(stub)}</pre>\n\n` +
+        `<b>Параметры:</b>\n<pre>${escapeHtml(profileLabel(full))}</pre>`;
+      const sent = await ctx.replyWithHTML(html, resultInline());
+      trackBotMessage(ctx, sent.message_id);
+      ctx.session.ui.resultMsgId = sent.message_id;
+      return sent;
+    }
 
-  const sent = await ctx.replyWithHTML(html, resultInline());
-  trackBotMessage(ctx, sent.message_id);
-  ctx.session.ui.resultMsgId = sent.message_id;
-  return sent;
-}
+    const { text, usage } = await generateReplyAI({
+      situation,
+      profile: full,
+      variant: ctx.session.variant,
+    });
 
+    if (tgId) {
+      await logRequest({
+        tgId,
+        createdAt: new Date(),
+        model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+        inputTokens: usage?.input_tokens ?? 0,
+        outputTokens: usage?.output_tokens ?? 0,
+        totalTokens: usage?.total_tokens ?? 0,
+        variant: ctx.session.variant,
+        situationLen: (ctx.session.draft.situation ?? '').length,
+      }).catch(() => {});
+    }
+
+    const finalText = text || 'Не смог сгенерировать ответ. Нажми “Подумай ещё”.';
+    const html =
+      `✅ Ответ (для копирования):\n` +
+      `<pre>${escapeHtml(finalText)}</pre>\n\n` +
+      `<b>Параметры:</b>\n<pre>${escapeHtml(profileLabel(full))}</pre>`;
+
+    const sent = await ctx.replyWithHTML(html, resultInline());
+    trackBotMessage(ctx, sent.message_id);
+    ctx.session.ui.resultMsgId = sent.message_id;
+    return sent;
+  } catch (e: any) {
+    console.log('AI_ERROR', e?.message || e);
+
+    if (e instanceof OpenAIRegionBlockedError) {
+      OPENAI_DISABLED_RUNTIME = true;
+
+      const stub = generateReply(situation, full, ctx.session.variant);
+      const html =
+        `⚠️ ИИ недоступен в текущем регионе/сети (403). Я временно переключился на черновик:\n` +
+        `<pre>${escapeHtml(stub)}</pre>\n\n` +
+        `<b>Параметры:</b>\n<pre>${escapeHtml(profileLabel(full))}</pre>`;
+
+      const sent = await ctx.replyWithHTML(html, resultInline());
+      trackBotMessage(ctx, sent.message_id);
+      ctx.session.ui.resultMsgId = sent.message_id;
+
+      if (tgId) {
+        await logRequest({
+          tgId,
+          createdAt: new Date(),
+          model: 'region_blocked_stub',
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          variant: ctx.session.variant,
+          situationLen: (ctx.session.draft.situation ?? '').length,
+        }).catch(() => {});
+      }
+
+      return sent;
+    }
+
+    const stub = generateReply(situation, full, ctx.session.variant);
+    const html =
+      `⚠️ ИИ временно недоступен, показал черновик:\n` +
+      `<pre>${escapeHtml(stub)}</pre>\n\n` +
+      `<b>Параметры:</b>\n<pre>${escapeHtml(profileLabel(full))}</pre>`;
+
+    const sent = await ctx.replyWithHTML(html, resultInline());
+    trackBotMessage(ctx, sent.message_id);
+    ctx.session.ui.resultMsgId = sent.message_id;
+    return sent;
+  }
 }
 
 // -------------------- /start --------------------
@@ -443,7 +509,7 @@ bot.start(async (ctx) => {
     });
     trialRemaining = u.trialRemaining ?? 3;
   } catch (e) {
-    console.error("ENSURE_USER_ERROR", e);
+    console.error('ENSURE_USER_ERROR', e);
   }
 
   ctx.session.trial.remaining = trialRemaining;
@@ -454,8 +520,6 @@ bot.start(async (ctx) => {
   ctx.session.variant = 0;
   return sendMainMenu(ctx);
 });
-
-
 
 // -------------------- main menu buttons --------------------
 bot.hears([BTN_HOME], async (ctx) => {
@@ -483,11 +547,7 @@ bot.hears(BTN_START, async (ctx) => {
   ctx.session.variant = 0;
   setMode(ctx, 'start_menu');
 
-  return sendOrEditFlow(
-    ctx,
-    'Начать ✅\n\nВыбери действие:',
-    startInlineMenu()
-  );
+  return sendOrEditFlow(ctx, 'Начать ✅\n\nВыбери действие:', startInlineMenu());
 });
 
 bot.hears(BTN_SUPPORT, async (ctx) => {
@@ -546,9 +606,9 @@ bot.action('st:set_standard', async (ctx) => {
 
   ctx.session.draft = {};
   ctx.session.stdReturnTo = 'menu';
+  setMode(ctx, 'std_greet');
 
-  setMode(ctx, 'std_audience');
-  return sendOrEditFlow(ctx, '1.3) Задать стандарт\n\nДля кого обычно пишем?', pickAudienceInline('std'));
+  return sendOrEditFlow(ctx, '1.3) Задать стандарт\n\n1) Нужно ли приветствие или сразу ответ?', pickGreetInline('std'));
 });
 
 // -------------------- partner inline actions --------------------
@@ -650,7 +710,6 @@ bot.on('text', async (ctx) => {
   const text = ctx.message.text.trim();
   const fwd = extractForwardedText(ctx);
 
-  // меню-кнопки уже обработаны hears-ами
   if ([BTN_START, BTN_SUPPORT, BTN_TARIFF, BTN_PARTNER, BTN_HOME, BTN_BACK].includes(text)) return;
 
   if (ctx.session.mode !== 'wait_situation') {
@@ -682,8 +741,8 @@ bot.action('as:use_std', async (ctx) => {
 
   if (!isCompleteProfile(ctx.session.defaults)) {
     ctx.session.stdReturnTo = 'answer_after_situation';
-    setMode(ctx, 'std_audience');
-    return sendOrEditFlow(ctx, 'Стандарт не задан. Давай настроим.\n\nДля кого обычно пишем?', pickAudienceInline('std'));
+    setMode(ctx, 'std_greet');
+    return sendOrEditFlow(ctx, 'Стандарт не задан. Давай настроим.\n\n1) Нужно ли приветствие или сразу ответ?', pickGreetInline('std'));
   }
 
   ctx.session.draft.useStandard = true;
@@ -695,168 +754,303 @@ bot.action('as:new_custom', async (ctx) => {
   if (isDuplicateAction(ctx, 'new_custom')) return;
 
   ctx.session.draft.useStandard = false;
-  ctx.session.draft.profile = {};
+  ctx.session.draft.profile = { tone: [], humanity: [], ban: [] };
 
-  setMode(ctx, 'custom_audience');
-  return sendOrEditFlow(ctx, 'Новая ситуация. Для кого готовим ответ?', pickAudienceInline('cus'));
+  setMode(ctx, 'custom_greet');
+  return sendOrEditFlow(ctx, '1) Нужно ли приветствие или отвечаем на вопрос?', pickGreetInline('cus'));
 });
 
-// -------------------- CUSTOM wizard --------------------
+function toggleMulti<T extends string>(list: T[], key: T, limit = 4): T[] {
+  const has = list.includes(key);
+  if (has) return list.filter((x) => x !== key);
+  if (list.length >= limit) return list;
+  return [...list, key];
+}
+
+// --------- CUSTOM (greet -> audience -> formality -> length -> goal -> tone(multi) -> humanity(multi) -> generate) ---------
+bot.action(/^cus:greet:(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const v = (ctx.match as any)[1] as ReplyProfile['greet'];
+
+  const prof = (ctx.session.draft.profile ??= {});
+  prof.greet = v;
+
+  setMode(ctx, 'custom_audience');
+  return sendOrEditFlow(ctx, '2) Для кого?', pickAudienceInline('cus'));
+});
+
 bot.action(/^cus:aud:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const v = (ctx.match as any)[1] as ReplyProfile['audience'];
-  ctx.session.draft.profile ??= {};
-  ctx.session.draft.profile.audience = v;
+
+  const prof = (ctx.session.draft.profile ??= {});
+  prof.audience = v;
 
   setMode(ctx, 'custom_formality');
-  return sendOrEditFlow(ctx, 'Ты/Вы? (как обращаться)', pickFormalityInline('cus'));
+  return sendOrEditFlow(ctx, '3) Стиль общения? (Ты/Вы)', pickFormalityInline('cus'));
 });
 
 bot.action(/^cus:for:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const v = (ctx.match as any)[1] as ReplyProfile['formality'];
-  ctx.session.draft.profile ??= {};
-  ctx.session.draft.profile.formality = v;
+
+  const prof = (ctx.session.draft.profile ??= {});
+  prof.formality = v;
 
   setMode(ctx, 'custom_length');
-  return sendOrEditFlow(ctx, 'Длина ответа?', pickLengthInline('cus'));
+  return sendOrEditFlow(ctx, '4) Длина ответа?', pickLengthInline('cus'));
 });
 
 bot.action(/^cus:len:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const v = (ctx.match as any)[1] as ReplyProfile['length'];
-  ctx.session.draft.profile ??= {};
-  ctx.session.draft.profile.length = v;
+
+  const prof = (ctx.session.draft.profile ??= {});
+  prof.length = v;
 
   setMode(ctx, 'custom_goal');
-  return sendOrEditFlow(ctx, 'Цель ответа?', pickGoalInline('cus'));
+  return sendOrEditFlow(ctx, '5) Цель?', pickGoalInline('cus'));
 });
 
 bot.action(/^cus:goal:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const v = (ctx.match as any)[1] as ReplyProfile['goal'];
-  ctx.session.draft.profile ??= {};
-  ctx.session.draft.profile.goal = v;
+
+  const prof = (ctx.session.draft.profile ??= {});
+  prof.goal = v;
 
   setMode(ctx, 'custom_tone');
-  return sendOrEditFlow(ctx, 'Тон ответа?', pickToneInline('cus'));
+  const selected = (prof.tone ??= []);
+  return sendOrEditFlow(
+    ctx,
+    `6) Тон (можно до 4)\nВыбрано: ${selected.length}/4`,
+    pickToneInline('cus', 0, selected)
+  );
 });
 
-bot.action(/^cus:tone:(.+)$/, async (ctx) => {
+bot.action(/^cus:tone:page:(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
-  const v = (ctx.match as any)[1] as ReplyProfile['tone'];
-  ctx.session.draft.profile ??= {};
-  ctx.session.draft.profile.tone = v;
+  const page = Number((ctx.match as any)[1] ?? 0);
+  const selected = (ctx.session.draft.profile?.tone ?? []) as ReplyProfile['tone'];
 
-  setMode(ctx, 'custom_ban');
-  return sendOrEditFlow(ctx, 'Нельзя в ответе:', pickBanInline('cus'));
+  return sendOrEditFlow(
+    ctx,
+    `6) Тон (можно до 4)\nВыбрано: ${selected.length}/4`,
+    pickToneInline('cus', page, selected)
+  );
 });
 
-bot.action(/^cus:ban:(.+)$/, async (ctx) => {
+bot.action(/^cus:tone:done$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
-  const v = (ctx.match as any)[1] as ReplyProfile['ban'];
-  ctx.session.draft.profile ??= {};
-  ctx.session.draft.profile.ban = v;
-
   setMode(ctx, 'custom_humanity');
-  return sendOrEditFlow(ctx, 'Человечность:', pickHumanityInline('cus'));
+
+  const prof = (ctx.session.draft.profile ??= {});
+  const selected = (prof.humanity ??= []);
+  return sendOrEditFlow(
+    ctx,
+    `7) Человечность (можно до 4)\nВыбрано: ${selected.length}/4`,
+    pickHumanityInline('cus', 0, selected)
+  );
 });
 
-bot.action(/^cus:hum:(.+)$/, async (ctx) => {
+bot.action(/^cus:tone:(?!page:|done$)(.+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
-  const v = (ctx.match as any)[1] as ReplyProfile['humanity'];
-  ctx.session.draft.profile ??= {};
-  ctx.session.draft.profile.humanity = v;
+  const key = (ctx.match as any)[1] as ReplyProfile['tone'][number];
 
-  const prof = ctx.session.draft.profile ?? {};
-  if (!isCompleteProfile(prof)) {
-    setMode(ctx, 'custom_audience');
-    return sendOrEditFlow(ctx, 'Похоже, не все параметры выбраны. Для кого готовим ответ?', pickAudienceInline('cus'));
+  const prof = (ctx.session.draft.profile ??= {});
+  const before = (prof.tone ??= []);
+  const after = toggleMulti(before, key, 4);
+
+  if (before.length === after.length && !before.includes(key)) {
+    await ctx.answerCbQuery('Можно выбрать максимум 4', { show_alert: false }).catch(() => {});
   }
 
-  await sendOrEditFlow(ctx, '✅ Параметры выбраны. Генерирую ответ…', {
-    reply_markup: { inline_keyboard: [[{ text: '🏠 В меню', callback_data: 'nav:home' }]] },
-  });
+  prof.tone = after;
 
-  return showResult(ctx, prof);
+  return sendOrEditFlow(
+    ctx,
+    `6) Тон (можно до 4)\nВыбрано: ${after.length}/4`,
+    pickToneInline('cus', 0, after)
+  );
 });
 
-// -------------------- STANDARD wizard --------------------
+bot.action(/^cus:hum:page:(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const page = Number((ctx.match as any)[1] ?? 0);
+  const selected = (ctx.session.draft.profile?.humanity ?? []) as ReplyProfile['humanity'];
+
+  return sendOrEditFlow(
+    ctx,
+    `7) Человечность (можно до 4)\nВыбрано: ${selected.length}/4`,
+    pickHumanityInline('cus', page, selected)
+  );
+});
+
+bot.action(/^cus:hum:done$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  setMode(ctx, 'pre_generate');
+
+  return sendOrEditFlow(
+    ctx,
+    '✅ Параметры выбраны.\n\nНажми «Сгенерировать» или открой «Расширенный вариант».',
+    generateInline()
+  );
+});
+
+bot.action(/^cus:hum:(?!page:|done$)(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const key = (ctx.match as any)[1] as ReplyProfile['humanity'][number];
+
+  const prof = (ctx.session.draft.profile ??= {});
+  const before = (prof.humanity ??= []);
+  const after = toggleMulti(before, key, 4);
+
+  if (before.length === after.length && !before.includes(key)) {
+    await ctx.answerCbQuery('Можно выбрать максимум 4', { show_alert: false }).catch(() => {});
+  }
+
+  prof.humanity = after;
+
+  return sendOrEditFlow(
+    ctx,
+    `7) Человечность (можно до 4)\nВыбрано: ${after.length}/4`,
+    pickHumanityInline('cus', 0, after)
+  );
+});
+
+// --------- STANDARD (то же самое, но пишем в defaults) ---------
+bot.action(/^std:greet:(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const v = (ctx.match as any)[1] as ReplyProfile['greet'];
+
+  ctx.session.defaults.greet = v;
+
+  setMode(ctx, 'std_audience');
+  return sendOrEditFlow(ctx, 'Стандарт: 2) Для кого?', pickAudienceInline('std'));
+});
+
 bot.action(/^std:aud:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const v = (ctx.match as any)[1] as ReplyProfile['audience'];
+
   ctx.session.defaults.audience = v;
 
   setMode(ctx, 'std_formality');
-  return sendOrEditFlow(ctx, 'Стандарт: Ты/Вы?', pickFormalityInline('std'));
+  return sendOrEditFlow(ctx, 'Стандарт: 3) Ты/Вы?', pickFormalityInline('std'));
 });
 
 bot.action(/^std:for:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const v = (ctx.match as any)[1] as ReplyProfile['formality'];
+
   ctx.session.defaults.formality = v;
 
   setMode(ctx, 'std_length');
-  return sendOrEditFlow(ctx, 'Стандарт: длина ответа?', pickLengthInline('std'));
+  return sendOrEditFlow(ctx, 'Стандарт: 4) Длина?', pickLengthInline('std'));
 });
 
 bot.action(/^std:len:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const v = (ctx.match as any)[1] as ReplyProfile['length'];
+
   ctx.session.defaults.length = v;
 
   setMode(ctx, 'std_goal');
-  return sendOrEditFlow(ctx, 'Стандарт: цель ответа?', pickGoalInline('std'));
+  return sendOrEditFlow(ctx, 'Стандарт: 5) Цель?', pickGoalInline('std'));
 });
 
 bot.action(/^std:goal:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const v = (ctx.match as any)[1] as ReplyProfile['goal'];
+
   ctx.session.defaults.goal = v;
 
   setMode(ctx, 'std_tone');
-  return sendOrEditFlow(ctx, 'Стандарт: тон ответа?', pickToneInline('std'));
+  const selected = ((ctx.session.defaults.tone ??= []) as ReplyProfile['tone']);
+  return sendOrEditFlow(
+    ctx,
+    `Стандарт: 6) Тон (до 4)\nВыбрано: ${selected.length}/4`,
+    pickToneInline('std', 0, selected)
+  );
 });
 
-bot.action(/^std:tone:(.+)$/, async (ctx) => {
+bot.action(/^std:tone:page:(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
-  const v = (ctx.match as any)[1] as ReplyProfile['tone'];
-  ctx.session.defaults.tone = v;
+  const page = Number((ctx.match as any)[1] ?? 0);
+  const selected = (ctx.session.defaults.tone ?? []) as ReplyProfile['tone'];
 
-  setMode(ctx, 'std_ban');
-  return sendOrEditFlow(ctx, 'Стандарт: нельзя в ответе:', pickBanInline('std'));
+  return sendOrEditFlow(
+    ctx,
+    `Стандарт: 6) Тон (до 4)\nВыбрано: ${selected.length}/4`,
+    pickToneInline('std', page, selected)
+  );
 });
 
-bot.action(/^std:ban:(.+)$/, async (ctx) => {
+bot.action(/^std:tone:done$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
-  const v = (ctx.match as any)[1] as ReplyProfile['ban'];
-  ctx.session.defaults.ban = v;
-
   setMode(ctx, 'std_humanity');
-  return sendOrEditFlow(ctx, 'Стандарт: человечность:', pickHumanityInline('std'));
+
+  const selected = ((ctx.session.defaults.humanity ??= []) as ReplyProfile['humanity']);
+  return sendOrEditFlow(
+    ctx,
+    `Стандарт: 7) Человечность (до 4)\nВыбрано: ${selected.length}/4`,
+    pickHumanityInline('std', 0, selected)
+  );
 });
 
-bot.action(/^std:hum:(.+)$/, async (ctx) => {
+bot.action(/^std:tone:(?!page:|done$)(.+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
-  const v = (ctx.match as any)[1] as ReplyProfile['humanity'];
-  ctx.session.defaults.humanity = v;
+  const key = (ctx.match as any)[1] as ReplyProfile['tone'][number];
+
+  const before = ((ctx.session.defaults.tone ??= []) as ReplyProfile['tone']);
+  const after = toggleMulti(before, key, 4);
+
+  if (before.length === after.length && !before.includes(key)) {
+    await ctx.answerCbQuery('Можно выбрать максимум 4', { show_alert: false }).catch(() => {});
+  }
+
+  ctx.session.defaults.tone = after;
+
+  return sendOrEditFlow(
+    ctx,
+    `Стандарт: 6) Тон (до 4)\nВыбрано: ${after.length}/4`,
+    pickToneInline('std', 0, after)
+  );
+});
+
+bot.action(/^std:hum:page:(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const page = Number((ctx.match as any)[1] ?? 0);
+  const selected = (ctx.session.defaults.humanity ?? []) as ReplyProfile['humanity'];
+
+  return sendOrEditFlow(
+    ctx,
+    `Стандарт: 7) Человечность (до 4)\nВыбрано: ${selected.length}/4`,
+    pickHumanityInline('std', page, selected)
+  );
+});
+
+bot.action(/^std:hum:done$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
 
   if (!isCompleteProfile(ctx.session.defaults)) {
-    setMode(ctx, 'std_audience');
-    return sendOrEditFlow(ctx, 'Похоже, стандарт не полностью задан. Для кого обычно пишем?', pickAudienceInline('std'));
+    setMode(ctx, 'std_greet');
+    return sendOrEditFlow(ctx, 'Похоже, стандарт не полностью задан. 1) Нужно ли приветствие?', pickGreetInline('std'));
   }
 
   if (ctx.session.stdReturnTo === 'menu') {
+    setMode(ctx, 'menu');
     await sendOrEditFlow(ctx, '✅ Стандарт сохранён. Нажми “🚀 Начать” → “📝 Описать ситуацию”.', {
       reply_markup: { inline_keyboard: [[{ text: '🏠 В меню', callback_data: 'nav:home' }]] },
     });
-    setMode(ctx, 'menu');
     const sent = await ctx.reply('Готово.', mainMenu());
     trackBotMessage(ctx, sent.message_id);
     return;
   }
 
   ctx.session.stdReturnTo = 'menu';
+  ctx.session.draft.useStandard = true;
+
   await sendOrEditFlow(ctx, '✅ Стандарт сохранён. Генерирую ответ…', {
     reply_markup: { inline_keyboard: [[{ text: '🏠 В меню', callback_data: 'nav:home' }]] },
   });
@@ -864,12 +1058,135 @@ bot.action(/^std:hum:(.+)$/, async (ctx) => {
   return showResult(ctx, ctx.session.defaults);
 });
 
+bot.action(/^std:hum:(?!page:|done$)(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const key = (ctx.match as any)[1] as ReplyProfile['humanity'][number];
+
+  const before = ((ctx.session.defaults.humanity ??= []) as ReplyProfile['humanity']);
+  const after = toggleMulti(before, key, 4);
+
+  if (before.length === after.length && !before.includes(key)) {
+    await ctx.answerCbQuery('Можно выбрать максимум 4', { show_alert: false }).catch(() => {});
+  }
+
+  ctx.session.defaults.humanity = after;
+  return sendOrEditFlow(
+    ctx,
+    `Стандарт: 7) Человечность (до 4)\nВыбрано: ${after.length}/4`,
+    pickHumanityInline('std', 0, after)
+  );
+});
+
+// --------- GENERATE + ADVANCED ---------
+bot.action('gen:make', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  if (isDuplicateAction(ctx, 'gen_make')) return;
+
+  const useStd = Boolean(ctx.session.draft.useStandard);
+
+  if (useStd) {
+    if (!isCompleteProfile(ctx.session.defaults)) {
+      setMode(ctx, 'std_greet');
+      return sendOrEditFlow(ctx, 'Стандарт не задан. 1) Нужно ли приветствие?', pickGreetInline('std'));
+    }
+
+    const adv = ctx.session.draft.profile ?? {};
+    const prof: Partial<ReplyProfile> = {
+      ...ctx.session.defaults,
+      ban: adv.ban,
+      emotion: adv.emotion,
+      format: adv.format,
+    };
+
+    await sendOrEditFlow(ctx, '⏳ Генерирую ответ, подождите…', {
+      reply_markup: { inline_keyboard: [[{ text: '🏠 В меню', callback_data: 'nav:home' }]] },
+    });
+
+    return showResult(ctx, prof);
+  }
+
+  const prof = ctx.session.draft.profile ?? {};
+  if (!isCompleteProfile(prof)) {
+    setMode(ctx, 'custom_greet');
+    return sendOrEditFlow(ctx, '1) Нужно ли приветствие или отвечаем на вопрос?', pickGreetInline('cus'));
+  }
+
+  await sendOrEditFlow(ctx, '⏳ Генерирую ответ, подождите…', {
+    reply_markup: { inline_keyboard: [[{ text: '🏠 В меню', callback_data: 'nav:home' }]] },
+  });
+
+  return showResult(ctx, prof);
+});
+
+bot.action('gen:adv', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  if (isDuplicateAction(ctx, 'gen_adv')) return;
+
+  const prof = (ctx.session.draft.profile ??= {});
+  prof.ban ??= [];
+
+  setMode(ctx, 'adv_ban');
+  const selected = prof.ban;
+  return sendOrEditFlow(ctx, `8) Нельзя (до 4)\nВыбрано: ${selected.length}/4`, pickBanInline(0, selected));
+});
+
+bot.action(/^adv:ban:page:(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const page = Number((ctx.match as any)[1] ?? 0);
+  const selected = (ctx.session.draft.profile?.ban ?? []) as NonNullable<ReplyProfile['ban']>;
+  return sendOrEditFlow(ctx, `8) Нельзя (до 4)\nВыбрано: ${selected.length}/4`, pickBanInline(page, selected));
+});
+
+bot.action(/^adv:ban:done$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  setMode(ctx, 'adv_emotion');
+  return sendOrEditFlow(ctx, '9) Эмоции собеседника (1 вариант):', pickEmotionInline());
+});
+
+bot.action(/^adv:ban:(?!page:|done$)(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const key = (ctx.match as any)[1] as NonNullable<ReplyProfile['ban']>[number];
+
+  const prof = (ctx.session.draft.profile ??= {});
+  const before = ((prof.ban ??= []) as NonNullable<ReplyProfile['ban']>);
+  const after = toggleMulti(before, key, 4);
+
+  if (before.length === after.length && !before.includes(key)) {
+    await ctx.answerCbQuery('Можно выбрать максимум 4', { show_alert: false }).catch(() => {});
+  }
+
+  prof.ban = after;
+
+  return sendOrEditFlow(ctx, `8) Нельзя (до 4)\nВыбрано: ${after.length}/4`, pickBanInline(0, after));
+});
+
+bot.action(/^adv:emo:(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const v = (ctx.match as any)[1] as ReplyProfile['emotion'];
+
+  const prof = (ctx.session.draft.profile ??= {});
+  prof.emotion = v;
+
+  setMode(ctx, 'adv_format');
+  return sendOrEditFlow(ctx, '10) Формат ответа (1 вариант):', pickFormatInline());
+});
+
+bot.action(/^adv:fmt:(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const v = (ctx.match as any)[1] as ReplyProfile['format'];
+
+  const prof = (ctx.session.draft.profile ??= {});
+  prof.format = v;
+
+  setMode(ctx, 'pre_generate');
+  return sendOrEditFlow(ctx, '✅ Расширенные параметры сохранены.\n\nНажми «Сгенерировать».', generateInline());
+});
+
 // -------------------- RESULT actions --------------------
 bot.action('res:think', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   if (isDuplicateAction(ctx, 'think')) return;
 
-  // сообщение ожидания
   const waitMsg = await ctx.reply('⏳ Перегенерирую ответ, подождите…');
   trackBotMessage(ctx, waitMsg.message_id);
 
@@ -877,65 +1194,35 @@ bot.action('res:think', async (ctx) => {
     ctx.session.feedback.thinkMore += 1;
     ctx.session.variant += 1;
 
-    const prof = ctx.session.draft.useStandard
-      ? ctx.session.defaults
-      : (ctx.session.draft.profile ?? {});
+    const useStd = Boolean(ctx.session.draft.useStandard);
+    if (useStd) {
+      if (!isCompleteProfile(ctx.session.defaults)) return;
+      const adv = ctx.session.draft.profile ?? {};
+      const prof: Partial<ReplyProfile> = {
+        ...ctx.session.defaults,
+        ban: adv.ban,
+        emotion: adv.emotion,
+        format: adv.format,
+      };
+      return await showResult(ctx, prof);
+    }
 
+    const prof = ctx.session.draft.profile ?? {};
     if (!isCompleteProfile(prof)) {
-      if (isCompleteProfile(ctx.session.defaults)) {
-        return await showResult(ctx, ctx.session.defaults);
-      }
+      if (isCompleteProfile(ctx.session.defaults)) return await showResult(ctx, ctx.session.defaults);
       return;
     }
 
     return await showResult(ctx, prof);
   } finally {
-    // удаляем "перегенерирую..."
     await safeDelete(ctx, waitMsg.message_id);
-    // чтобы cleanupUi потом не пытался удалить второй раз
     ctx.session.ui.botMsgIds = ctx.session.ui.botMsgIds.filter((id) => id !== waitMsg.message_id);
   }
 });
 
-
 bot.action('res:plus', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   if (isDuplicateAction(ctx, 'plus')) return;
-
-  // ⬇️ убрали проверку mode
-  ctx.session.feedback.plus += 1;
-  const sent = await ctx.reply('✅ Спасибо! Учту.', mainMenu());
-  trackBotMessage(ctx, sent.message_id);
-  return;
-});
-
-bot.action('res:minus', async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  if (isDuplicateAction(ctx, 'minus')) return;
-
-  // ⬇️ убрали проверку mode
-  ctx.session.feedback.minus += 1;
-  const sent = await ctx.reply('📝 Понял. Нажми “Подумай ещё” или “Изменить параметры”.', mainMenu());
-  trackBotMessage(ctx, sent.message_id);
-  return;
-});
-
-bot.action('res:edit', async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  if (isDuplicateAction(ctx, 'edit')) return;
-
-  // ⬇️ убрали проверку mode
-  ctx.session.draft.useStandard = false;
-  ctx.session.draft.profile = {};
-  setMode(ctx, 'custom_audience');
-  return sendOrEditFlow(ctx, 'Изменим параметры. Для кого готовим ответ?', pickAudienceInline('cus'));
-});
-
-
-bot.action('res:plus', async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  if (isDuplicateAction(ctx, 'plus')) return;
-  if (ctx.session.mode !== 'result') return;
 
   ctx.session.feedback.plus += 1;
   const sent = await ctx.reply('✅ Спасибо! Учту.', mainMenu());
@@ -945,7 +1232,6 @@ bot.action('res:plus', async (ctx) => {
 bot.action('res:minus', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   if (isDuplicateAction(ctx, 'minus')) return;
-  if (ctx.session.mode !== 'result') return;
 
   ctx.session.feedback.minus += 1;
   const sent = await ctx.reply('📝 Понял. Нажми “Подумай ещё” или “Изменить параметры”.', mainMenu());
@@ -955,137 +1241,111 @@ bot.action('res:minus', async (ctx) => {
 bot.action('res:edit', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   if (isDuplicateAction(ctx, 'edit')) return;
-  if (ctx.session.mode !== 'result') return;
 
   ctx.session.draft.useStandard = false;
-  ctx.session.draft.profile = {};
-  setMode(ctx, 'custom_audience');
-  return sendOrEditFlow(ctx, 'Изменим параметры. Для кого готовим ответ?', pickAudienceInline('cus'));
+  ctx.session.draft.profile = { tone: [], humanity: [], ban: [] };
+
+  setMode(ctx, 'custom_greet');
+  return sendOrEditFlow(ctx, '1) Нужно ли приветствие или отвечаем на вопрос?', pickGreetInline('cus'));
 });
 
 // -------------------- launch --------------------
 async function start() {
-  
-  bot.catch((err) => console.error("BOT_ERROR", err));
-bot.catch((err) => console.error("BOT_ERROR", err));
-process.on("unhandledRejection", (e) => console.error("UNHANDLED_REJECTION", e));
-process.on("uncaughtException", (e) => console.error("UNCAUGHT_EXCEPTION", e));
+  const me = await bot.telegram.getMe();
+  console.log('BOT_ME', { id: me.id, username: me.username });
 
-const me = await bot.telegram.getMe();
-console.log("BOT_ME", { id: me.id, username: me.username });
+  const wh = await bot.telegram.getWebhookInfo();
+  console.log('WEBHOOK_INFO', {
+    url: wh.url,
+    pending_update_count: wh.pending_update_count,
+    last_error_date: wh.last_error_date,
+    last_error_message: wh.last_error_message,
+  });
 
-const wh = await bot.telegram.getWebhookInfo();
-console.log("WEBHOOK_INFO", {
-  url: wh.url,
-  pending_update_count: wh.pending_update_count,
-  last_error_date: wh.last_error_date,
-  last_error_message: wh.last_error_message,
-});
-
-  const isProd = process.env.NODE_ENV === "production";
+  const isProd = process.env.NODE_ENV === 'production';
   const port = Number(process.env.PORT ?? 3000);
 
   if (!isProd) {
-    // локально: polling
     await bot.telegram.deleteWebhook({ drop_pending_updates: true });
     await bot.launch();
-    console.log("Bot started (polling).");
+    console.log('Bot started (polling).');
     return;
   }
 
- const publicUrl = process.env.PUBLIC_URL;
-if (!publicUrl) throw new Error("PUBLIC_URL is missing (e.g. https://xxx.up.railway.app)");
+  const publicUrl = process.env.PUBLIC_URL;
+  if (!publicUrl) throw new Error('PUBLIC_URL is missing (e.g. https://xxx.up.railway.app)');
 
-const hookPath = "/telegraf";
+  const hookPath = '/telegraf';
+  const base = new URL(publicUrl).origin;
+  const webhookUrl = `${base}${hookPath}`;
 
-// берём только origin (схема + домен). Даже если PUBLIC_URL случайно с путём — игнорируем путь.
-const base = new URL(publicUrl).origin;
-
-const webhookUrl = `${base}${hookPath}`;
-
-console.log("WEBHOOK_COMPUTED", { publicUrl, base, hookPath, webhookUrl });
-
-
-  function sleep(ms: number) {
-    return new Promise((r) => setTimeout(r, ms));
-  }
+  console.log('WEBHOOK_COMPUTED', { publicUrl, base, hookPath, webhookUrl });
 
   async function ensureWebhook(url: string) {
-  const info = await bot.telegram.getWebhookInfo();
+    const info = await bot.telegram.getWebhookInfo();
+    const hasPending = (info.pending_update_count ?? 0) > 0;
+    const hasError = Boolean(info.last_error_date);
 
-  const hasPending = (info.pending_update_count ?? 0) > 0;
-  const hasError = Boolean(info.last_error_date);
-
-  // если всё идеально — не трогаем
-  if (info.url === url && !hasPending && !hasError) {
-    console.log(`Webhook OK: ${url}`);
-    return;
-  }
-
-  for (;;) {
-    try {
-      await bot.telegram.setWebhook(url, { drop_pending_updates: true });
-      console.log(`Webhook reset/set: ${url}`);
+    if (info.url === url && !hasPending && !hasError) {
+      console.log(`Webhook OK: ${url}`);
       return;
-    } catch (e: any) {
-      const code = e?.response?.error_code;
-      const retryAfter = e?.response?.parameters?.retry_after ?? e?.parameters?.retry_after;
+    }
 
-      if (code === 429 && retryAfter) {
-        console.log(`Telegram 429. Retry in ${retryAfter}s`);
-        await new Promise(r => setTimeout(r, (retryAfter + 1) * 1000));
-        continue;
+    for (;;) {
+      try {
+        await bot.telegram.setWebhook(url, { drop_pending_updates: true });
+        console.log(`Webhook reset/set: ${url}`);
+        return;
+      } catch (e: any) {
+        const code = e?.response?.error_code;
+        const retryAfter = e?.response?.parameters?.retry_after ?? e?.parameters?.retry_after;
+
+        if (code === 429 && retryAfter) {
+          console.log(`Telegram 429. Retry in ${retryAfter}s`);
+          await new Promise((r) => setTimeout(r, (retryAfter + 1) * 1000));
+          continue;
+        }
+        throw e;
       }
-      throw e;
     }
   }
-}
 
+  const handle = bot.webhookCallback(hookPath);
 
-  // сначала поднимаем сервер, потом проверяем/ставим вебхук
- const handle = bot.webhookCallback(hookPath);
+  http
+    .createServer((req, res) => {
+      const url = (req.url ?? '').split('?')[0];
 
-http
-  .createServer((req, res) => {
-    const url = (req.url ?? "").split("?")[0];
+      console.log('HTTP_IN', req.method, url);
 
-    // покажет: долетают ли запросы вообще в контейнер
-    console.log("HTTP_IN", req.method, url);
+      if (req.method === 'GET' && (url === '/' || url === '/health' || url === hookPath)) {
+        res.writeHead(200, { 'content-type': 'text/plain' });
+        res.end('ok');
+        return;
+      }
 
-    // health (проверка из браузера/curл)
-    if (req.method === "GET" && (url === "/" || url === "/health" || url === hookPath)) {
-      res.writeHead(200, { "content-type": "text/plain" });
-      res.end("ok");
-      return;
-    }
+      if (url !== hookPath) {
+        res.writeHead(404, { 'content-type': 'text/plain' });
+        res.end('not found');
+        return;
+      }
 
-    // не наш роут
-    if (url !== hookPath) {
-      res.writeHead(404, { "content-type": "text/plain" });
-      res.end("not found");
-      return;
-    }
-
-    // webhook Telegraf + защита от падения без ответа
-    Promise.resolve(handle(req, res)).catch((err) => {
-      console.error("WEBHOOK_HANDLER_ERROR", err);
-      if (!res.headersSent) res.writeHead(200);
-      res.end("ok");
+      Promise.resolve(handle(req, res)).catch((err) => {
+        console.error('WEBHOOK_HANDLER_ERROR', err);
+        if (!res.headersSent) res.writeHead(200);
+        res.end('ok');
+      });
+    })
+    .listen(port, '0.0.0.0', () => {
+      console.log(`Webhook server listening on ${port}${hookPath}`);
     });
-  })
-  .listen(port, "0.0.0.0", () => {
-    console.log(`Webhook server listening on ${port}${hookPath}`);
-  });
 
+  await ensureWebhook(webhookUrl);
 
-await ensureWebhook(webhookUrl);
-
-
-  console.log("Bot started (webhook).");
+  console.log('Bot started (webhook).');
 }
 
 start().catch((e) => {
-  console.error("START_ERROR", e);
+  console.error('START_ERROR', e);
   process.exit(1);
 });
-
