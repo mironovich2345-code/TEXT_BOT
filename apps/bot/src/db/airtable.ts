@@ -249,31 +249,33 @@ export async function getPartnerStats(referrerTgId: number): Promise<{
   const idStr = String(referrerTgId);
 
   // 1) Приглашённые
-  let invited = 0;
-  let invitedActive: number | null = null;
+let invited = 0;
+let invitedActive: number | null = null;
 
-  try {
-    const invitees = await listAllRecords({
-      table: AIRTABLE_USERS_TABLE,
-      filterByFormula: `{referrer_tg_id}='${idStr}'`,
-      fields: ['plan', 'plan_status'],
-    });
+try {
+  // Формула на всякий случай поддерживает и текст, и число
+  const formula = `OR({referrer_tg_id}='${idStr}', {referrer_tg_id}=${idStr})`;
 
-    invited = invitees.length;
+  // ВАЖНО: НЕ запрашиваем несуществующее plan_status
+  const invitees = await listAllRecords({
+    table: AIRTABLE_USERS_TABLE,
+    filterByFormula: formula,
+    fields: ['plan', 'referrer_tg_id'], // оба поля есть у тебя в Users
+  });
 
-    // активность пытаемся посчитать, если поля существуют
-    invitedActive = invitees.filter((r) => {
-      const plan = String(r.fields?.plan ?? '').toLowerCase();
-      const status = String(r.fields?.plan_status ?? '').toLowerCase();
+  invited = invitees.length;
 
-      if (status) return status === 'active';
-      // fallback если plan_status нет
-      return plan === 'optimal' || plan === 'maximum';
-    }).length;
-  } catch {
-    invited = 0;
-    invitedActive = null;
-  }
+  // Пока считаем активными тех, у кого тариф не trial/expired, а optimal/maximum
+  invitedActive = invitees.filter((r) => {
+    const plan = String(r.fields?.plan ?? '').toLowerCase();
+    return plan === 'optimal' || plan === 'maximum';
+  }).length;
+} catch (e) {
+  console.error('INVITEES_QUERY_ERROR', e);
+  invited = 0;
+  invitedActive = null;
+}
+
 
   // 2) Начисления (если таблица уже есть)
   let accrued: number | null = null;
