@@ -2,7 +2,7 @@
 
 import 'dotenv/config';
 import { Telegraf, session } from 'telegraf';
-import { ensureUser, setReferrerOnce } from './db/airtable';
+import { ensureUser, setReferrerOnce, getPartnerStats } from './db/airtable';
 import { updateTrialRemaining } from './db/airtable';
 import { logRequest } from './db/airtable';
 import http from 'node:http';
@@ -977,6 +977,11 @@ bot.action('par:conditions', async (ctx) => {
   trackBotMessage(ctx, sent.message_id);
 });
 
+bot.action('par:menu', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  return sendOrEditFlow(ctx, '🤝 Партнерская программа:', partnerInline());
+});
+
 
 bot.action('par:link', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
@@ -998,12 +1003,53 @@ bot.action('par:stats', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   if (isDuplicateAction(ctx, 'par_stats')) return;
 
-  const sent = await ctx.reply(
-    `📊 Статистика (заглушка)\n\nПартнёр:\n- приглашено: 0\n- купили: 0\n- начислено: 0 ₽\n- к выводу: 0 ₽ (порог 1000 ₽)\n\nПользователь:\n- запросов: 0\n- ответов: 0\n- удачные: 0`,
-    mainMenu()
-  );
-  trackBotMessage(ctx, sent.message_id);
+  const tgId = ctx.from?.id;
+  if (!tgId) return;
+
+  const fmtRub = (v: number | null) => (v === null ? '—' : `${Math.round(v)} ₽`);
+  const fmtNum = (v: number | null) => (v === null ? '—' : String(v));
+
+  let s: Awaited<ReturnType<typeof getPartnerStats>>;
+  try {
+    s = await getPartnerStats(tgId);
+  } catch (e) {
+    console.error('PARTNER_STATS_ERROR', e);
+    await sendOrEditFlow(ctx, '📊 Статистика временно недоступна. Попробуй позже.', {
+      reply_markup: { inline_keyboard: [[{ text: '⬅️ Назад', callback_data: 'par:menu' }], [{ text: '🏠 В меню', callback_data: 'nav:home' }]] },
+    });
+    return;
+  }
+
+  const threshold = 1000;
+  const availableText =
+    s.available === null ? '—' : `${Math.round(s.available)} ₽ (порог ${threshold} ₽)`;
+
+  const text =
+    [
+      '📊 Статистика',
+      '',
+      'Партнёр:',
+      `- приглашено: ${s.invited}`,
+      `- активных подписок: ${fmtNum(s.invitedActive)}`,
+      `- начислено: ${fmtRub(s.accrued)}`,
+      `- к выводу: ${availableText}`,
+      '',
+      'Пользователь:',
+      `- ответов: ${fmtNum(s.myAnswers)}`,
+      '',
+      'Примечание: начисления появятся после подключения оплат (ЮKassa).',
+    ].join('\n');
+
+  return sendOrEditFlow(ctx, text, {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '⬅️ Назад', callback_data: 'par:menu' }],
+        [{ text: '🏠 В меню', callback_data: 'nav:home' }],
+      ],
+    },
+  });
 });
+
 
 // -------------------- tariff inline actions --------------------
 bot.action('tar:upgrade', async (ctx) => {

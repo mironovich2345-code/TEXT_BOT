@@ -192,3 +192,133 @@ export async function setReferrerOnce(opts: {
 
   return { status: 'set' };
 }
+
+const AIRTABLE_REQUESTS_TABLE = process.env.AIRTABLE_REQUESTS_TABLE ?? 'Requests';
+const AIRTABLE_PARTNER_ACCRUALS_TABLE = process.env.AIRTABLE_PARTNER_ACCRUALS_TABLE ?? 'PartnerAccruals';
+const AIRTABLE_PAYOUTS_TABLE = process.env.AIRTABLE_PAYOUTS_TABLE ?? 'Payouts';
+
+async function listAllRecords(opts: {
+  table: string;
+  filterByFormula?: string;
+  fields?: string[];
+  pageSize?: number;
+}): Promise<AirtableRecord[]> {
+  const { table, filterByFormula, fields, pageSize = 100 } = opts;
+
+  let offset: string | undefined;
+  const out: AirtableRecord[] = [];
+
+  for (;;) {
+    const qs = new URLSearchParams();
+    qs.set('pageSize', String(pageSize));
+    if (filterByFormula) qs.set('filterByFormula', filterByFormula);
+    if (fields?.length) fields.forEach((f) => qs.append('fields[]', f));
+    if (offset) qs.set('offset', offset);
+
+    const data = await airtableRequest(`${encodeURIComponent(table)}?${qs.toString()}`);
+    const records = ((data as any)?.records ?? []) as AirtableRecord[];
+    out.push(...records);
+
+    offset = (data as any)?.offset;
+    if (!offset) break;
+  }
+
+  return out;
+}
+
+function num(v: any): number {
+  const n = typeof v === 'number' ? v : Number(String(v ?? '').replace(',', '.'));
+  return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * Статистика партнёра:
+ * - приглашено (Users where referrer_tg_id = me)
+ * - активных подписок среди приглашённых (если есть поля plan/plan_status)
+ * - начислено / к выводу (если есть таблицы PartnerAccruals / Payouts)
+ * - моих ответов (Requests where tg_id = me)
+ */
+export async function getPartnerStats(referrerTgId: number): Promise<{
+  invited: number;
+  invitedActive: number | null;
+  accrued: number | null;
+  reservedToPayout: number | null;
+  available: number | null;
+  myAnswers: number | null;
+}> {
+  const idStr = String(referrerTgId);
+
+  // 1) Приглашённые
+  let invited = 0;
+  let invitedActive: number | null = null;
+
+  try {
+    const invitees = await listAllRecords({
+      table: AIRTABLE_USERS_TABLE,
+      filterByFormula: `{referrer_tg_id}='${idStr}'`,
+      fields: ['plan', 'plan_status'],
+    });
+
+    invited = invitees.length;
+
+    // активность пытаемся посчитать, если поля существуют
+    invitedActive = invitees.filter((r) => {
+      const plan = String(r.fields?.plan ?? '').toLowerCase();
+      const status = String(r.fields?.plan_status ?? '').toLowerCase();
+
+      if (status) return status === 'active';
+      // fallback если plan_status нет
+      return plan === 'optimal' || plan === 'maximum';
+    }).length;
+  } catch {
+    invited = 0;
+    invitedActive = null;
+  }
+
+  // 2) Начисления (если таблица уже есть)
+  let accrued: number | null = null;
+  try {
+    const rows = await listAllRecords({
+      table: AIRTABLE_PARTNER_ACCRUALS_TABLE,
+      filterByFormula: `AND({referrer_tg_id}='${idStr}', {status}='accrued')`,
+      fields: ['reward'],
+    });
+    accrued = rows.reduce((s, r) => s + num(r.fields?.reward), 0);
+  } catch {
+    accrued = null;
+  }
+
+  // 3) Зарезервировано к выплате (requested + paid)
+  let reservedToPayout: number | null = null;
+  try {
+    const rows = await listAllRecords({
+      table: AIRTABLE_PAYOUTS_TABLE,
+      filterByFormula: `AND({referrer_tg_id}='${idStr}', OR({status}='requested', {status}='paid'))`,
+      fields: ['amount'],
+    });
+    reservedToPayout = rows.reduce((s, r) => s + num(r.fields?.amount), 0);
+  } catch {
+    reservedToPayout = null;
+  }
+
+  // 4) Доступно = начислено - зарезервировано
+  let available: number | null = null;
+  if (accrued !== null && reservedToPayout !== null) {
+    available = Math.max(accrued - reservedToPayout, 0);
+  }
+
+  // 5) Мои ответы (Requests)
+  let myAnswers: number | null = null;
+  try {
+    const rows = await listAllRecords({
+      table: AIRTABLE_REQUESTS_TABLE,
+      filterByFormula: `OR({tg_id}='${idStr}', {tg_id}=${idStr})`,
+      fields: ['tg_id'],
+    });
+    myAnswers = rows.length;
+  } catch {
+    myAnswers = null;
+  }
+
+  return { invited, invitedActive, accrued, reservedToPayout, available, myAnswers };
+}
