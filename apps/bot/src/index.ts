@@ -232,8 +232,8 @@ function resultKeyboard() {
       inline_keyboard: [
         [{ text: '🤔 Подумай ещё', callback_data: 'res:think' }],
         [
-          { text: '👍 +', callback_data: 'res:plus' },
-          { text: '👎 -', callback_data: 'res:minus' },
+          { text: '🫧 Мягче', callback_data: 'res:soft' },
+          { text: '⚡️ Жестче', callback_data: 'res:hard' },
         ],
         [{ text: '🛠️ Изменить параметры', callback_data: 'res:edit' }],
         [{ text: '🏠 В меню', callback_data: 'nav:home' }],
@@ -241,6 +241,7 @@ function resultKeyboard() {
     },
   };
 }
+
 
 
 function profileSummary(p: Partial<ReplyProfile>) {
@@ -537,6 +538,32 @@ function tryToggleLimited<T extends string>(list: T[], key: T, limit = 4): { nex
   if (isOn) return { next: list.filter((x) => x !== key), limited: false };
   if (list.length >= limit) return { next: list, limited: true };
   return { next: [...list, key], limited: false };
+}
+function uniqLimit<T>(arr: T[], limit: number): T[] {
+  const out: T[] = [];
+  for (const x of arr) {
+    if (!out.includes(x)) out.push(x);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+function shiftProfileTone(profile: ReplyProfile, kind: 'soft' | 'hard'): ReplyProfile {
+  const current = Array.isArray(profile.tone) ? profile.tone : [];
+
+  // Мягче: вежливо (мягко) / спокойнее
+  const softOrder: ReplyProfile['tone'] = ['polite_soft', 'calm'];
+  // Жестче: тверже / прямее (без грубости)
+  const hardOrder: ReplyProfile['tone'] = ['firm', 'categorical'];
+
+  const prefix = kind === 'soft' ? softOrder : hardOrder;
+
+  const nextTone = uniqLimit(
+    [...prefix, ...current.filter((t) => !prefix.includes(t))],
+    4
+  );
+
+  return { ...profile, tone: nextTone };
 }
 
 // -------------------- result render/toggle --------------------
@@ -1670,6 +1697,88 @@ bot.action(/^adv:fmt:(.+)$/, async (ctx) => {
 
 // -------------------- RESULT actions --------------------
 
+bot.action('res:soft', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  if (isDuplicateAction(ctx, 'soft')) return;
+
+  const waitMsg = await ctx.reply('⏳ Делаю ответ мягче…');
+  trackBotMessage(ctx, waitMsg.message_id);
+
+  try {
+    ctx.session.variant += 1;
+
+    // берем последнюю использованную конфигурацию (самый надежный источник)
+    const lastProfile = getUiVal<ReplyProfile | null>(ctx, 'lastResultProfile', null);
+
+    // fallback на текущую логику (если вдруг lastProfile пуст)
+    let baseProfile: ReplyProfile | null = lastProfile;
+    if (!baseProfile) {
+      const useStd = Boolean(ctx.session.draft.useStandard);
+      if (useStd && isCompleteProfile(ctx.session.defaults)) {
+        const adv = ctx.session.draft.profile ?? {};
+        baseProfile = {
+          ...(ctx.session.defaults as ReplyProfile),
+          ban: adv.ban,
+          emotion: adv.emotion,
+          format: adv.format,
+        };
+      } else if (isCompleteProfile(ctx.session.draft.profile ?? {})) {
+        baseProfile = ctx.session.draft.profile as ReplyProfile;
+      } else if (isCompleteProfile(ctx.session.defaults)) {
+        baseProfile = ctx.session.defaults as ReplyProfile;
+      }
+    }
+
+    if (!baseProfile) return;
+
+    const shifted = shiftProfileTone(baseProfile, 'soft');
+    return await showResult(ctx, shifted);
+  } finally {
+    await safeDelete(ctx, waitMsg.message_id);
+    ctx.session.ui.botMsgIds = ctx.session.ui.botMsgIds.filter((id) => id !== waitMsg.message_id);
+  }
+});
+
+bot.action('res:hard', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  if (isDuplicateAction(ctx, 'hard')) return;
+
+  const waitMsg = await ctx.reply('⏳ Делаю ответ жестче…');
+  trackBotMessage(ctx, waitMsg.message_id);
+
+  try {
+    ctx.session.variant += 1;
+
+    const lastProfile = getUiVal<ReplyProfile | null>(ctx, 'lastResultProfile', null);
+
+    let baseProfile: ReplyProfile | null = lastProfile;
+    if (!baseProfile) {
+      const useStd = Boolean(ctx.session.draft.useStandard);
+      if (useStd && isCompleteProfile(ctx.session.defaults)) {
+        const adv = ctx.session.draft.profile ?? {};
+        baseProfile = {
+          ...(ctx.session.defaults as ReplyProfile),
+          ban: adv.ban,
+          emotion: adv.emotion,
+          format: adv.format,
+        };
+      } else if (isCompleteProfile(ctx.session.draft.profile ?? {})) {
+        baseProfile = ctx.session.draft.profile as ReplyProfile;
+      } else if (isCompleteProfile(ctx.session.defaults)) {
+        baseProfile = ctx.session.defaults as ReplyProfile;
+      }
+    }
+
+    if (!baseProfile) return;
+
+    const shifted = shiftProfileTone(baseProfile, 'hard');
+    return await showResult(ctx, shifted);
+  } finally {
+    await safeDelete(ctx, waitMsg.message_id);
+    ctx.session.ui.botMsgIds = ctx.session.ui.botMsgIds.filter((id) => id !== waitMsg.message_id);
+  }
+});
+
 bot.action('res:think', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   if (isDuplicateAction(ctx, 'think')) return;
@@ -1707,23 +1816,7 @@ bot.action('res:think', async (ctx) => {
   }
 });
 
-bot.action('res:plus', async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  if (isDuplicateAction(ctx, 'plus')) return;
 
-  ctx.session.feedback.plus += 1;
-  const sent = await ctx.reply('✅ Спасибо! Учту.', mainMenu());
-  trackBotMessage(ctx, sent.message_id);
-});
-
-bot.action('res:minus', async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  if (isDuplicateAction(ctx, 'minus')) return;
-
-  ctx.session.feedback.minus += 1;
-  const sent = await ctx.reply('📝 Понял. Нажми “Подумай ещё” или “Изменить параметры”.', mainMenu());
-  trackBotMessage(ctx, sent.message_id);
-});
 
 bot.action('res:edit', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
