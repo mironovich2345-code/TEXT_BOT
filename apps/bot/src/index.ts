@@ -19,15 +19,15 @@ import {
   tariffInline,
   partnerInline,
 
-  pickGreetInline,
+  
   pickAudienceInline,
   pickFormalityInline,
   pickLengthInline,
-  pickGoalInline,
+  
   pickToneInline,
-  pickHumanityInline,
+  
 
-  pickBanInline,
+  
   pickEmotionInline,
   pickFormatInline,
   generateInline,
@@ -216,6 +216,26 @@ async function sendOrEditResultHTML(ctx: BotContext, html: string, keyboard: any
   ctx.session.ui.resultMsgId = sent.message_id;
   return sent;
 }
+
+const DEFAULT_GREET: ReplyProfile['greet'] = 'reply';
+const DEFAULT_GOAL: ReplyProfile['goal'] = 'clarify';
+const DEFAULT_HUMANITY: ReplyProfile['humanity'] = ['strict'];
+
+function normalizeProfile(p: Partial<ReplyProfile>): ReplyProfile {
+  return {
+    greet: (p.greet ?? DEFAULT_GREET) as ReplyProfile['greet'],
+    audience: p.audience as ReplyProfile['audience'],
+    formality: p.formality as ReplyProfile['formality'],
+    length: p.length as ReplyProfile['length'],
+    goal: (p.goal ?? DEFAULT_GOAL) as ReplyProfile['goal'],
+    tone: (Array.isArray(p.tone) ? p.tone : []) as ReplyProfile['tone'],
+    humanity: (Array.isArray(p.humanity) && p.humanity.length ? p.humanity : DEFAULT_HUMANITY) as ReplyProfile['humanity'],
+    ban: (Array.isArray(p.ban) ? p.ban : []) as ReplyProfile['ban'],
+    emotion: p.emotion as ReplyProfile['emotion'],
+    format: p.format as ReplyProfile['format'],
+  };
+}
+
 
 function escapeHtml(s: string) {
   return s
@@ -446,9 +466,9 @@ function buildResultHtml(answerText: string, profile: ReplyProfile) {
 
 function isCompleteProfile(p: Partial<ReplyProfile>) {
   const tones = Array.isArray(p.tone) ? p.tone : [];
-  const hums = Array.isArray(p.humanity) ? p.humanity : [];
-  return Boolean(p.greet && p.audience && p.formality && p.length && p.goal && tones.length > 0 && hums.length > 0);
+  return Boolean(p.audience && p.formality && p.length && tones.length > 0);
 }
+
 
 function generateReply(situation: string, profile: ReplyProfile, variant: number) {
   const tones = profile.tone ?? [];
@@ -608,7 +628,8 @@ const tgId = ctx.from?.id;
   const situation = ctx.session.draft.situation ?? '';
   setMode(ctx, 'result');
 
-  const full = profile as ReplyProfile;
+  const full = normalizeProfile(profile);
+
 
   try {
     // 1) Нет ключа — stub
@@ -984,10 +1005,17 @@ bot.action('st:set_standard', async (ctx) => {
 
   ctx.session.draft = {};
   ctx.session.stdReturnTo = 'menu';
-  setMode(ctx, 'std_greet');
 
-  return sendOrEditFlow(ctx, '1.3) Задать стандарт\n\n1) Нужно ли приветствие или сразу ответ?', pickGreetInline('std'));
+  // дефолты вместо удалённых вопросов
+  ctx.session.defaults.greet = DEFAULT_GREET;
+  ctx.session.defaults.goal = DEFAULT_GOAL;
+  ctx.session.defaults.humanity = DEFAULT_HUMANITY;
+  ctx.session.defaults.ban ??= [];
+
+  setMode(ctx, 'std_audience');
+  return sendOrEditFlow(ctx, 'Стандарт: 1) Для кого?', pickAudienceInline('std'));
 });
+
 
 // -------------------- partner inline actions --------------------
 bot.action('par:conditions', async (ctx) => {
@@ -1234,8 +1262,9 @@ bot.action('as:use_std', async (ctx) => {
 
   if (!isCompleteProfile(ctx.session.defaults)) {
     ctx.session.stdReturnTo = 'answer_after_situation';
-    setMode(ctx, 'std_greet');
-    return sendOrEditFlow(ctx, 'Стандарт не задан. Давай настроим.\n\n1) Нужно ли приветствие или сразу ответ?', pickGreetInline('std'));
+    setMode(ctx, 'std_audience');
+return sendOrEditFlow(ctx, 'Стандарт не задан. Давай настроим.\n\nСтандарт: 1) Для кого?', pickAudienceInline('std'));
+
   }
 
   ctx.session.draft.useStandard = true;
@@ -1247,23 +1276,21 @@ bot.action('as:new_custom', async (ctx) => {
   if (isDuplicateAction(ctx, 'new_custom')) return;
 
   ctx.session.draft.useStandard = false;
-  ctx.session.draft.profile = { tone: [], humanity: [], ban: [] };
-
-  setMode(ctx, 'custom_greet');
-  return sendOrEditFlow(ctx, '1) Нужно ли приветствие или отвечаем на вопрос?', pickGreetInline('cus'));
-});
-
-// --------- CUSTOM flow ---------
-bot.action(/^cus:greet:(.+)$/, async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  const v = (ctx.match as any)[1] as ReplyProfile['greet'];
-
-  const prof = (ctx.session.draft.profile ??= {});
-  prof.greet = v;
+  ctx.session.draft.profile = {
+    tone: [],
+    ban: [],
+    humanity: DEFAULT_HUMANITY,
+    greet: DEFAULT_GREET,
+    goal: DEFAULT_GOAL,
+  };
 
   setMode(ctx, 'custom_audience');
-  return sendOrEditFlow(ctx, '2) Для кого?', pickAudienceInline('cus'));
+  return sendOrEditFlow(ctx, '1) Для кого?', pickAudienceInline('cus'));
 });
+
+
+// --------- CUSTOM flow ---------
+
 
 bot.action(/^cus:aud:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
@@ -1294,24 +1321,20 @@ bot.action(/^cus:len:(.+)$/, async (ctx) => {
   const prof = (ctx.session.draft.profile ??= {});
   prof.length = v;
 
-  setMode(ctx, 'custom_goal');
-  return sendOrEditFlow(ctx, '5) Цель?', pickGoalInline('cus'));
-});
-
-bot.action(/^cus:goal:(.+)$/, async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  const v = (ctx.match as any)[1] as ReplyProfile['goal'];
-
-  const prof = (ctx.session.draft.profile ??= {});
-  prof.goal = v;
-
   setMode(ctx, 'custom_tone');
 
   const selected = (prof.tone ??= []);
   setUiPage(ctx, 'cusTonePage', 0);
 
-  return sendOrEditFlow(ctx, `6) Тон (можно до 4)\nВыбрано: ${selected.length}/4`, pickToneInline('cus', 0, selected));
+  return sendOrEditFlow(
+    ctx,
+    `4) Тон (можно до 4)\nВыбрано: ${selected.length}/4`,
+    pickToneInline('cus', 0, selected)
+  );
 });
+
+
+
 
 bot.action(/^cus:tone:page:(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
@@ -1324,18 +1347,21 @@ bot.action(/^cus:tone:page:(\d+)$/, async (ctx) => {
 
 bot.action(/^cus:tone:done$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
-  setMode(ctx, 'custom_humanity');
+  setMode(ctx, 'pre_generate');
 
   const prof = (ctx.session.draft.profile ??= {});
-  const selected = (prof.humanity ??= []);
-  setUiPage(ctx, 'cusHumPage', 0);
+  prof.greet ??= DEFAULT_GREET;
+  prof.goal ??= DEFAULT_GOAL;
+  prof.humanity ??= DEFAULT_HUMANITY;
+  prof.ban ??= [];
 
   return sendOrEditFlow(
     ctx,
-    `7) Человечность (можно до 4)\nВыбрано: ${selected.length}/4`,
-    pickHumanityInline('cus', 0, selected)
+    '✅ Параметры выбраны.\n\nНажми «Сгенерировать» или открой «Расширенный вариант».',
+    generateInline()
   );
 });
+
 
 bot.action(/^cus:tone:(?!page:|done$)(?:tog:|toggle:)?([^:]+)(?::(\d+))?$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
@@ -1358,18 +1384,7 @@ bot.action(/^cus:tone:(?!page:|done$)(?:tog:|toggle:)?([^:]+)(?::(\d+))?$/, asyn
   return sendOrEditFlow(ctx, `6) Тон (можно до 4)\nВыбрано: ${next.length}/4`, pickToneInline('cus', page, next));
 });
 
-bot.action(/^cus:hum:page:(\d+)$/, async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  const page = Number((ctx.match as any)[1] ?? 0);
-  setUiPage(ctx, 'cusHumPage', page);
 
-  const selected = (ctx.session.draft.profile?.humanity ?? []) as ReplyProfile['humanity'];
-  return sendOrEditFlow(
-    ctx,
-    `7) Человечность (можно до 4)\nВыбрано: ${selected.length}/4`,
-    pickHumanityInline('cus', page, selected)
-  );
-});
 
 bot.action(/^cus:hum:done$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
@@ -1382,41 +1397,10 @@ bot.action(/^cus:hum:done$/, async (ctx) => {
   );
 });
 
-bot.action(/^cus:hum:(?!page:|done$)(?:tog:|toggle:)?([^:]+)(?::(\d+))?$/, async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  const key = (ctx.match as any)[1] as ReplyProfile['humanity'][number];
-  const pageFromCb = (ctx.match as any)[2] ? Number((ctx.match as any)[2]) : undefined;
 
-  const prof = (ctx.session.draft.profile ??= {});
-  const before = (prof.humanity ??= []);
-  const page = Number.isFinite(pageFromCb as any) ? (pageFromCb as number) : getUiPage(ctx, 'cusHumPage');
-
-  const { next, limited } = tryToggleLimited(before, key, 4);
-  if (limited) {
-    await ctx.answerCbQuery('Можно выбрать максимум 4', { show_alert: false }).catch(() => {});
-    return;
-  }
-
-  prof.humanity = next;
-  setUiPage(ctx, 'cusHumPage', page);
-
-  return sendOrEditFlow(
-    ctx,
-    `7) Человечность (можно до 4)\nВыбрано: ${next.length}/4`,
-    pickHumanityInline('cus', page, next)
-  );
-});
 
 // --------- STANDARD flow ---------
-bot.action(/^std:greet:(.+)$/, async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  const v = (ctx.match as any)[1] as ReplyProfile['greet'];
 
-  ctx.session.defaults.greet = v;
-
-  setMode(ctx, 'std_audience');
-  return sendOrEditFlow(ctx, 'Стандарт: 2) Для кого?', pickAudienceInline('std'));
-});
 
 bot.action(/^std:aud:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
@@ -1444,16 +1428,6 @@ bot.action(/^std:len:(.+)$/, async (ctx) => {
 
   ctx.session.defaults.length = v;
 
-  setMode(ctx, 'std_goal');
-  return sendOrEditFlow(ctx, 'Стандарт: 5) Цель?', pickGoalInline('std'));
-});
-
-bot.action(/^std:goal:(.+)$/, async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  const v = (ctx.match as any)[1] as ReplyProfile['goal'];
-
-  ctx.session.defaults.goal = v;
-
   setMode(ctx, 'std_tone');
 
   const selected = ((ctx.session.defaults.tone ??= []) as ReplyProfile['tone']);
@@ -1461,10 +1435,13 @@ bot.action(/^std:goal:(.+)$/, async (ctx) => {
 
   return sendOrEditFlow(
     ctx,
-    `Стандарт: 6) Тон (до 4)\nВыбрано: ${selected.length}/4`,
+    `Стандарт: 4) Тон (до 4)\nВыбрано: ${selected.length}/4`,
     pickToneInline('std', 0, selected)
   );
 });
+
+
+
 
 bot.action(/^std:tone:page:(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
@@ -1481,17 +1458,38 @@ bot.action(/^std:tone:page:(\d+)$/, async (ctx) => {
 
 bot.action(/^std:tone:done$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
-  setMode(ctx, 'std_humanity');
 
-  const selected = ((ctx.session.defaults.humanity ??= []) as ReplyProfile['humanity']);
-  setUiPage(ctx, 'stdHumPage', 0);
+  // дефолты вместо удалённых вопросов
+  ctx.session.defaults.greet = DEFAULT_GREET;
+  ctx.session.defaults.goal = DEFAULT_GOAL;
+  ctx.session.defaults.humanity = DEFAULT_HUMANITY;
+  ctx.session.defaults.ban ??= [];
 
-  return sendOrEditFlow(
-    ctx,
-    `Стандарт: 7) Человечность (до 4)\nВыбрано: ${selected.length}/4`,
-    pickHumanityInline('std', 0, selected)
-  );
+  if (!isCompleteProfile(ctx.session.defaults)) {
+    setMode(ctx, 'std_audience');
+    return sendOrEditFlow(ctx, 'Похоже, стандарт не полностью задан. 1) Для кого?', pickAudienceInline('std'));
+  }
+
+  if (ctx.session.stdReturnTo === 'menu') {
+    setMode(ctx, 'menu');
+    await sendOrEditFlow(ctx, '✅ Стандарт сохранён. Нажми “🚀 Начать” → “📝 Описать ситуацию”.', {
+      reply_markup: { inline_keyboard: [[{ text: '🏠 В меню', callback_data: 'nav:home' }]] },
+    });
+    const sent = await ctx.reply('Готово.', mainMenu());
+    trackBotMessage(ctx, sent.message_id);
+    return;
+  }
+
+  ctx.session.stdReturnTo = 'menu';
+  ctx.session.draft.useStandard = true;
+
+  await sendOrEditFlow(ctx, '✅ Стандарт сохранён. Генерирую ответ…', {
+    reply_markup: { inline_keyboard: [[{ text: '🏠 В меню', callback_data: 'nav:home' }]] },
+  });
+
+  return showResult(ctx, ctx.session.defaults);
 });
+
 
 bot.action(/^std:tone:(?!page:|done$)(?:tog:|toggle:)?([^:]+)(?::(\d+))?$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
@@ -1517,70 +1515,6 @@ bot.action(/^std:tone:(?!page:|done$)(?:tog:|toggle:)?([^:]+)(?::(\d+))?$/, asyn
   );
 });
 
-bot.action(/^std:hum:page:(\d+)$/, async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  const page = Number((ctx.match as any)[1] ?? 0);
-  setUiPage(ctx, 'stdHumPage', page);
-
-  const selected = (ctx.session.defaults.humanity ?? []) as ReplyProfile['humanity'];
-  return sendOrEditFlow(
-    ctx,
-    `Стандарт: 7) Человечность (до 4)\nВыбрано: ${selected.length}/4`,
-    pickHumanityInline('std', page, selected)
-  );
-});
-
-bot.action(/^std:hum:done$/, async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-
-  if (!isCompleteProfile(ctx.session.defaults)) {
-    setMode(ctx, 'std_greet');
-    return sendOrEditFlow(ctx, 'Похоже, стандарт не полностью задан. 1) Нужно ли приветствие?', pickGreetInline('std'));
-  }
-
-  if (ctx.session.stdReturnTo === 'menu') {
-    setMode(ctx, 'menu');
-    await sendOrEditFlow(ctx, '✅ Стандарт сохранён. Нажми “🚀 Начать” → “📝 Описать ситуацию”.', {
-      reply_markup: { inline_keyboard: [[{ text: '🏠 В меню', callback_data: 'nav:home' }]] },
-    });
-    const sent = await ctx.reply('Готово.', mainMenu());
-    trackBotMessage(ctx, sent.message_id);
-    return;
-  }
-
-  ctx.session.stdReturnTo = 'menu';
-  ctx.session.draft.useStandard = true;
-
-  await sendOrEditFlow(ctx, '✅ Стандарт сохранён. Генерирую ответ…', {
-    reply_markup: { inline_keyboard: [[{ text: '🏠 В меню', callback_data: 'nav:home' }]] },
-  });
-
-  return showResult(ctx, ctx.session.defaults);
-});
-
-bot.action(/^std:hum:(?!page:|done$)(?:tog:|toggle:)?([^:]+)(?::(\d+))?$/, async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  const key = (ctx.match as any)[1] as ReplyProfile['humanity'][number];
-  const pageFromCb = (ctx.match as any)[2] ? Number((ctx.match as any)[2]) : undefined;
-
-  const before = ((ctx.session.defaults.humanity ??= []) as ReplyProfile['humanity']);
-  const page = Number.isFinite(pageFromCb as any) ? (pageFromCb as number) : getUiPage(ctx, 'stdHumPage');
-
-  const { next, limited } = tryToggleLimited(before, key, 4);
-  if (limited) {
-    await ctx.answerCbQuery('Можно выбрать максимум 4', { show_alert: false }).catch(() => {});
-    return;
-  }
-
-  ctx.session.defaults.humanity = next;
-  setUiPage(ctx, 'stdHumPage', page);
-
-  return sendOrEditFlow(
-    ctx,
-    `Стандарт: 7) Человечность (до 4)\nВыбрано: ${next.length}/4`,
-    pickHumanityInline('std', page, next)
-  );
-});
 
 // --------- GENERATE + ADVANCED ---------
 bot.action('gen:make', async (ctx) => {
@@ -1591,8 +1525,9 @@ bot.action('gen:make', async (ctx) => {
 
   if (useStd) {
     if (!isCompleteProfile(ctx.session.defaults)) {
-      setMode(ctx, 'std_greet');
-      return sendOrEditFlow(ctx, 'Стандарт не задан. 1) Нужно ли приветствие?', pickGreetInline('std'));
+      setMode(ctx, 'std_audience');
+return sendOrEditFlow(ctx, 'Стандарт не задан. Давай настроим.\n\nСтандарт: 1) Для кого?', pickAudienceInline('std'));
+
     }
 
     const adv = ctx.session.draft.profile ?? {};
@@ -1612,8 +1547,9 @@ bot.action('gen:make', async (ctx) => {
 
   const prof = ctx.session.draft.profile ?? {};
   if (!isCompleteProfile(prof)) {
-    setMode(ctx, 'custom_greet');
-    return sendOrEditFlow(ctx, '1) Нужно ли приветствие или отвечаем на вопрос?', pickGreetInline('cus'));
+    setMode(ctx, 'custom_audience');
+return sendOrEditFlow(ctx, '1) Для кого?', pickAudienceInline('cus'));
+
   }
 
   await sendOrEditFlow(ctx, '⏳ Генерирую ответ, подождите…', {
@@ -1628,50 +1564,21 @@ bot.action('gen:adv', async (ctx) => {
   if (isDuplicateAction(ctx, 'gen_adv')) return;
 
   const prof = (ctx.session.draft.profile ??= {});
-  prof.ban ??= [];
+  prof.ban ??= []; // просто храним пустым
+  prof.greet ??= DEFAULT_GREET;
+  prof.goal ??= DEFAULT_GOAL;
+  prof.humanity ??= DEFAULT_HUMANITY;
 
-  setMode(ctx, 'adv_ban');
-  setUiPage(ctx, 'advBanPage', 0);
-
-  const selected = prof.ban;
-  return sendOrEditFlow(ctx, `8) Нельзя (до 4)\nВыбрано: ${selected.length}/4`, pickBanInline(0, selected));
-});
-
-bot.action(/^adv:ban:page:(\d+)$/, async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  const page = Number((ctx.match as any)[1] ?? 0);
-  setUiPage(ctx, 'advBanPage', page);
-
-  const selected = (ctx.session.draft.profile?.ban ?? []) as NonNullable<ReplyProfile['ban']>;
-  return sendOrEditFlow(ctx, `8) Нельзя (до 4)\nВыбрано: ${selected.length}/4`, pickBanInline(page, selected));
-});
-
-bot.action(/^adv:ban:done$/, async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
   setMode(ctx, 'adv_emotion');
-  return sendOrEditFlow(ctx, '9) Эмоции собеседника (1 вариант):', pickEmotionInline());
+  return sendOrEditFlow(ctx, '5) Эмоции собеседника (1 вариант):', pickEmotionInline());
 });
 
-bot.action(/^adv:ban:(?!page:|done$)(?:tog:|toggle:)?([^:]+)(?::(\d+))?$/, async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  const key = (ctx.match as any)[1] as NonNullable<ReplyProfile['ban']>[number];
-  const pageFromCb = (ctx.match as any)[2] ? Number((ctx.match as any)[2]) : undefined;
 
-  const prof = (ctx.session.draft.profile ??= {});
-  const before = ((prof.ban ??= []) as NonNullable<ReplyProfile['ban']>);
-  const page = Number.isFinite(pageFromCb as any) ? (pageFromCb as number) : getUiPage(ctx, 'advBanPage');
 
-  const { next, limited } = tryToggleLimited(before, key, 4);
-  if (limited) {
-    await ctx.answerCbQuery('Можно выбрать максимум 4', { show_alert: false }).catch(() => {});
-    return;
-  }
 
-  prof.ban = next;
-  setUiPage(ctx, 'advBanPage', page);
 
-  return sendOrEditFlow(ctx, `8) Нельзя (до 4)\nВыбрано: ${next.length}/4`, pickBanInline(page, next));
-});
+
+
 
 bot.action(/^adv:emo:(.+)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
@@ -1825,8 +1732,9 @@ bot.action('res:edit', async (ctx) => {
   ctx.session.draft.useStandard = false;
   ctx.session.draft.profile = { tone: [], humanity: [], ban: [] };
 
-  setMode(ctx, 'custom_greet');
-  return sendOrEditFlow(ctx, '1) Нужно ли приветствие или отвечаем на вопрос?', pickGreetInline('cus'));
+  setMode(ctx, 'custom_audience');
+return sendOrEditFlow(ctx, '1) Для кого?', pickAudienceInline('cus'));
+
 });
 
 // -------------------- launch --------------------
