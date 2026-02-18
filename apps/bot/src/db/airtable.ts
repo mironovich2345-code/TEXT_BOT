@@ -30,44 +30,84 @@ async function findUserRecordIdByTgId(tgId: number): Promise<string | null> {
   return rows[0]?.id ?? null;
 }
 
+function addDaysIso(days: number) {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return d.toISOString();
+}
+
 export async function ensureUser(args: {
   tgId: number;
   username?: string;
   firstName?: string;
-}): Promise<{ trialRemaining: number; plan: string }> {
+}): Promise<{
+  trialRemaining: number;
+  plan: string;
+  trialStartedAt?: string;
+  trialExpiresAt?: string;
+}> {
   if (!base) {
-    warnOnce("AIRTABLE: disabled (no AIRTABLE_TOKEN/AIRTABLE_BASE_ID)");
-    return { trialRemaining: 3, plan: "trial" };
+    warnOnce('AIRTABLE: disabled (no AIRTABLE_TOKEN/AIRTABLE_BASE_ID)');
+    return { trialRemaining: 3, plan: 'trial' };
   }
 
   const table = base(USERS_TABLE);
 
+  const nowIso = new Date().toISOString();
+  const expIso = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
+
   const recordId = await findUserRecordIdByTgId(args.tgId);
 
+  // --- CREATE ---
   if (!recordId) {
     const created = await table.create({
       tg_id: args.tgId,
-      username: args.username ?? "",
-      first_name: args.firstName ?? "",
-      plan: "trial",
+      username: args.username ?? '',
+      first_name: args.firstName ?? '',
+      plan: 'trial',
       trial_remaining: 3,
+
+      // ✅ 3-дневный trial фиксируется при первом создании
+      trial_started_at: nowIso,
+      trial_expires_at: expIso,
     });
-    const tr = Number(created.fields["trial_remaining"] ?? 3);
-    const plan = String(created.fields["plan"] ?? "trial");
-    return { trialRemaining: tr, plan };
+
+    const tr = Number(created.fields['trial_remaining'] ?? 3);
+    const plan = String(created.fields['plan'] ?? 'trial');
+
+    const startedAt = String((created.fields as any)['trial_started_at'] ?? nowIso);
+    const expiresAt = String((created.fields as any)['trial_expires_at'] ?? expIso);
+
+    return { trialRemaining: tr, plan, trialStartedAt: startedAt, trialExpiresAt: expiresAt };
   }
 
+  // --- EXISTING ---
   const existing = await table.find(recordId);
-  const tr = Number(existing.fields["trial_remaining"] ?? 3);
-  const plan = String(existing.fields["plan"] ?? "trial");
 
-  // аккуратно обновим username/first_name (если поменялись)
+  const tr = Number(existing.fields['trial_remaining'] ?? 3);
+  const plan = String(existing.fields['plan'] ?? 'trial');
+
+  // ✅ если поля trial пустые (старые записи) — дозаполняем один раз
+  const startedAtRaw = (existing.fields as any)['trial_started_at'];
+  const expiresAtRaw = (existing.fields as any)['trial_expires_at'];
+
+  const startedAt = startedAtRaw ? String(startedAtRaw) : nowIso;
+  const expiresAt = expiresAtRaw ? String(expiresAtRaw) : expIso;
+
+  if (!startedAtRaw || !expiresAtRaw) {
+    await table.update(recordId, {
+      trial_started_at: startedAt,
+      trial_expires_at: expiresAt,
+    });
+  }
+
+  // аккуратно обновим username/first_name (как у тебя было)
   await table.update(recordId, {
-    username: args.username ?? "",
-    first_name: args.firstName ?? "",
+    username: args.username ?? '',
+    first_name: args.firstName ?? '',
   });
 
-  return { trialRemaining: tr, plan };
+  return { trialRemaining: tr, plan, trialStartedAt: startedAt, trialExpiresAt: expiresAt };
 }
 
 export async function updateTrialRemaining(tgId: number, remaining: number) {

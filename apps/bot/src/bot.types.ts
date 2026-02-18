@@ -121,7 +121,12 @@ export interface BotSession {
 
   variant: number;
 
-  trial: { remaining: number };
+  trial: {
+  remaining: number; // оставляем для совместимости (пока не трогаем)
+  startedAt?: string; // ISO
+  expiresAt?: string; // ISO
+},
+
   feedback: { plus: number; minus: number; thinkMore: number };
 
   anti: { lastAction?: string; lastAt?: number };

@@ -68,7 +68,7 @@ bot.use(
       draft: {},
       defaults: {},
       variant: 0,
-      trial: { remaining: 3 },
+      trial: { remaining: 3, startedAt: undefined, expiresAt: undefined },
       feedback: { plus: 0, minus: 0, thinkMore: 0 },
       anti: {},
       ui: { botMsgIds: [], userMsgIds: [] },
@@ -185,6 +185,14 @@ async function sendOrEditFlow(ctx: BotContext, text: string, keyboard: any) {
   const sent = await ctx.reply(text, keyboard);
   trackBotMessage(ctx, sent.message_id);
   ctx.session.ui.flowMsgId = sent.message_id;
+}
+
+function isTrialActive(ctx: BotContext) {
+  const exp = ctx.session.trial.expiresAt;
+  if (!exp) return false;
+  const t = Date.parse(exp);
+  if (Number.isNaN(t)) return false;
+  return Date.now() < t;
 }
 
 async function sendOrEditResultHTML(ctx: BotContext, html: string, keyboard: any) {
@@ -561,15 +569,14 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
     return sent;
   }
 
-  // trial/paywall: списываем за КАЖДЫЙ показ результата
-  if (ctx.session.trial.remaining <= 0) return showPaywall(ctx);
+  
+  // 3-дневный free trial
+if (!isTrialActive(ctx)) return showPaywall(ctx);
 
-  ctx.session.trial.remaining -= 1;
+// Пока trial активен — НЕ списываем remaining.
+// (remaining оставляем для совместимости, потом уберём полностью)
+const tgId = ctx.from?.id;
 
-  const tgId = ctx.from?.id;
-  if (tgId) {
-    await updateTrialRemaining(tgId, ctx.session.trial.remaining).catch(() => {});
-  }
 
   const situation = ctx.session.draft.situation ?? '';
   setMode(ctx, 'result');
@@ -701,6 +708,9 @@ bot.start(async (ctx) => {
       firstName: ctx.from?.first_name,
     });
     trialRemaining = u.trialRemaining ?? 3;
+    (ctx.session.trial.startedAt as any) = (u as any).trialStartedAt ?? undefined;
+    (ctx.session.trial.expiresAt as any) = (u as any).trialExpiresAt ?? undefined;
+
 
     // 2) если пришли по реф-ссылке — фиксируем навсегда (если ещё не было)
     if (referrerTgId) {
