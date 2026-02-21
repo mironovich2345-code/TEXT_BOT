@@ -38,6 +38,7 @@ import {
   BTN_PARTNER,
   BTN_HOME,
   BTN_BACK,
+  BTN_SETTINGS,
 } from '../keyboards';
 
 let OPENAI_DISABLED_RUNTIME = false;
@@ -352,27 +353,6 @@ function profileLabel(p: Partial<ReplyProfile>) {
     other: 'Другое',
   };
 
-  const greetMap: Record<string, string> = {
-    greet: 'Приветствие',
-    reply: 'Сразу ответ',
-  };
-
-  const goalMap: Record<string, string> = {
-    sell: 'Продажа',
-    ask: 'Просьба',
-    apologize: 'Извинение',
-    clarify: 'Уточнение',
-    refuse: 'Отказ',
-    buy: 'Покупка',
-    handle_negative: 'Отработка негатива',
-    support: 'Поддержка',
-    congrats: 'Поздравление',
-    remind: 'Напоминание',
-    review: 'Отзыв',
-    collab: 'Сотрудничество',
-    cooperate: 'Сотрудничество',
-  };
-
   const toneMap: Record<string, string> = {
     neutral: 'Нейтрально',
     friendly: 'Дружелюбно',
@@ -392,38 +372,6 @@ function profileLabel(p: Partial<ReplyProfile>) {
     apologetic: 'Извиняюще/примирительно',
   };
 
-  const humMap: Record<string, string> = {
-    thanks: 'Благодарность',
-    compliment: 'Комплимент',
-    humor: 'Лёгкий юмор',
-    strict: 'Строго по делу',
-    empathy: 'Эмпатия (“понимаю вас”)',
-    apology: 'Извинение (если уместно)',
-    care: 'Забота (“хочу, чтобы вам было удобно”)',
-    support: 'Поддержка (“вы всё правильно делаете”)',
-    tact: 'Тактичность / деликатность',
-    transparent: 'Прозрачность (“скажу честно…”)',
-    conf_no_pressure: 'Уверенность без давления',
-    positive_end: 'Позитивное завершение',
-    choice: 'Предложение выбора',
-    next_steps: 'Чёткие следующие шаги',
-  };
-
-  const banMap: Record<string, string> = {
-    promise: 'Не обещать',
-    pressure: 'Не давить',
-    discounts: 'Без скидок/торга',
-    personal: 'Без личного',
-    shame: 'Без вины/стыда',
-    passive_aggr: 'Без пассивной агрессии',
-    argue: 'Не спорить/не конфликтовать',
-    flattery: 'Без чрезмерной лести',
-    legal_threat: 'Без юр. угроз',
-    lie: 'Без лжи/приукрашивания',
-    flirt: 'Без флирта',
-    competitors: 'Не сравнивать с конкурентами',
-  };
-
   const emoMap: Record<string, string> = {
     restrained: 'Сдержан',
     unhappy: 'Недоволен',
@@ -441,18 +389,12 @@ function profileLabel(p: Partial<ReplyProfile>) {
   };
 
   const tones = (p.tone ?? []).map((k) => toneMap[k] ?? k).join(', ') || '—';
-  const hums = (p.humanity ?? []).map((k) => humMap[k] ?? k).join(', ') || '—';
-  const bans = (p.ban ?? []).map((k) => banMap[k] ?? k).join(', ') || '—';
 
   return [
-    `Приветствие: ${p.greet ? (greetMap[p.greet] ?? p.greet) : '—'}`,
     `Для кого: ${p.audience ? (audMap[p.audience] ?? p.audience) : '—'}`,
     `Ты/Вы: ${p.formality === 'tu' ? 'Ты' : p.formality === 'vous' ? 'Вы' : '—'}`,
     `Длина: ${p.length === 'short' ? 'Коротко' : p.length === 'normal' ? 'Средне' : p.length === 'detailed' ? 'Подробно' : '—'}`,
-    `Цель: ${p.goal ? (goalMap[p.goal] ?? p.goal) : '—'}`,
     `Тон (до 4): ${tones}`,
-    `Человечность (до 4): ${hums}`,
-    `Нельзя (adv, до 4): ${bans}`,
     `Эмоции (adv): ${p.emotion ? (emoMap[p.emotion] ?? p.emotion) : '—'}`,
     `Формат (adv): ${p.format ? (fmtMap[p.format] ?? p.format) : '—'}`,
   ].join('\n');
@@ -837,6 +779,20 @@ bot.hears(BTN_START, async (ctx) => {
   return sendOrEditFlow(ctx, 'Начать ✅\n\nВыбери действие:', startInlineMenu());
 });
 
+bot.hears(BTN_SETTINGS, async (ctx) => {
+  await cleanupUi(ctx);
+  ctx.session.draft = {};
+  ctx.session.stdReturnTo = 'menu';
+
+  ctx.session.defaults.greet = DEFAULT_GREET;
+  ctx.session.defaults.goal = DEFAULT_GOAL;
+  ctx.session.defaults.humanity = DEFAULT_HUMANITY;
+  ctx.session.defaults.ban ??= [];
+
+  setMode(ctx, 'std_audience');
+  return sendOrEditFlow(ctx, 'Настройки ответа: 1) Для кого?', pickAudienceInline('std'));
+});
+
 bot.hears(BTN_SUPPORT, async (ctx) => {
   await cleanupUi(ctx);
   setMode(ctx, 'support');
@@ -923,6 +879,7 @@ function tariffChooseKeyboard() {
       inline_keyboard: [
         [{ text: 'Оптимальный', callback_data: 'tar:plan:optimal' }],
         [{ text: 'Максимальный', callback_data: 'tar:plan:maximum' }],
+        [{ text: '🏠 В меню', callback_data: 'nav:home' }],
       ],
     },
   };
@@ -1036,24 +993,28 @@ bot.action('par:conditions', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   if (isDuplicateAction(ctx, 'par_cond')) return;
 
-  const sent = await ctx.replyWithHTML(
-    [
-      '📜 <b>Условия партнёрской программы</b>',
-      '',
-      '1) Каждый приглашённый пользователь фиксируется за вами <b>навсегда</b>.',
-      '',
-      '2) Вознаграждение с каждой оплаты приглашённого пользователя:',
-      '— <b>50%</b> с тарифа <b>Оптимальный</b>',
-      '— <b>40%</b> с тарифа <b>Максимальный</b>',
-      '',
-      '3) Вывод средств доступен от <b>1000 ₽</b>.',
-      '',
-      '4) Важно: пока пользователь оплачивает подписку, вы получаете вознаграждение <b>пожизненно</b>.',
-    ].join('\n'),
-    mainMenu()
-  );
+  const text = [
+    '📜 Условия партнёрской программы',
+    '',
+    '1) Каждый приглашённый пользователь фиксируется за вами навсегда.',
+    '',
+    '2) Вознаграждение с каждой оплаты приглашённого пользователя:',
+    '— 50% с тарифа Оптимальный',
+    '— 40% с тарифа Максимальный',
+    '',
+    '3) Вывод средств доступен от 1000 ₽.',
+    '',
+    '4) Важно: пока пользователь оплачивает подписку, вы получаете вознаграждение пожизненно.',
+  ].join('\n');
 
-  trackBotMessage(ctx, sent.message_id);
+  return sendOrEditFlow(ctx, text, {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '⬅️ Назад', callback_data: 'par:menu' }],
+        [{ text: '🏠 В меню', callback_data: 'nav:home' }],
+      ],
+    },
+  });
 });
 
 bot.action('par:menu', async (ctx) => {
@@ -1073,8 +1034,14 @@ bot.action('par:link', async (ctx) => {
     ? `🔗 Твоя реферальная ссылка:\n${deepLink}\n\nМожно также отправить командой:\n/start ${refCode}`
     : `🔗 Твоя реферальная ссылка:\n/start ${refCode}\n\n(Чтобы была кликабельная t.me ссылка — добавь BOT_USERNAME в env или дождись getMe в проде.)`;
 
-  const sent = await ctx.reply(text, mainMenu());
-  trackBotMessage(ctx, sent.message_id);
+  return sendOrEditFlow(ctx, text, {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '⬅️ Назад', callback_data: 'par:menu' }],
+        [{ text: '🏠 В меню', callback_data: 'nav:home' }],
+      ],
+    },
+  });
 });
 
 
@@ -1245,7 +1212,7 @@ bot.on('text', async (ctx) => {
   const text = ctx.message.text.trim();
   const fwd = extractForwardedText(ctx);
 
-  if ([BTN_START, BTN_SUPPORT, BTN_TARIFF, BTN_PARTNER, BTN_HOME, BTN_BACK].includes(text)) return;
+  if ([BTN_START, BTN_SETTINGS, BTN_SUPPORT, BTN_TARIFF, BTN_PARTNER, BTN_HOME, BTN_BACK].includes(text)) return;
 
   if (ctx.session.mode !== 'wait_situation') {
     const sent = await ctx.reply('Нажми “🚀 Начать” → “📝 Описать ситуацию”.', mainMenu());

@@ -9,10 +9,13 @@ export const BTN_PARTNER = '🤝 Партнерская программа';
 export const BTN_HOME = '🏠 В меню';
 export const BTN_BACK = '⬅️ Назад';
 
+export const BTN_SETTINGS = '🧰 Задать настройки ответа';
+
 // Reply клавиатура: всегда “под рукой”
 export function mainMenu() {
   return Markup.keyboard([
     [BTN_START],
+    [BTN_SETTINGS],
     [BTN_TARIFF, BTN_PARTNER],
     [BTN_SUPPORT],
   ])
@@ -28,7 +31,6 @@ export function navMenu() {
 export function startInlineMenu() {
   return Markup.inlineKeyboard([
     [Markup.button.callback('📝 Описать ситуацию', 'st:describe')],
-    [Markup.button.callback('🧰 Задать стандарт', 'st:set_standard')],
     [Markup.button.callback('🏠 В меню', 'nav:home')],
   ]);
 }
