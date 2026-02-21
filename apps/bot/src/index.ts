@@ -62,18 +62,23 @@ bot.use(async (ctx, next) => {
 // -------------------- session --------------------
 bot.use(
   session({
-    defaultSession: (): BotSession => ({
-      mode: 'menu',
-      history: [],
-      draft: {},
-      defaults: {},
-      variant: 0,
-      trial: { remaining: 3, startedAt: undefined, expiresAt: undefined },
-      feedback: { plus: 0, minus: 0, thinkMore: 0 },
-      anti: {},
-      ui: { botMsgIds: [], userMsgIds: [] },
-      stdReturnTo: 'menu',
-    }),
+   defaultSession: (): BotSession => ({
+  mode: 'menu',
+  history: [],
+  plan: 'trial', // ✅ обязательное поле после правки типов
+
+  draft: {},
+  defaults: {},
+  variant: 0,
+
+  trial: { remaining: 3, startedAt: null, expiresAt: null }, // ✅ корректные типы
+
+  feedback: { plus: 0, minus: 0, thinkMore: 0 },
+  anti: {},
+  ui: { botMsgIds: [], userMsgIds: [] },
+  stdReturnTo: 'menu',
+}),
+
   })
 );
 
@@ -304,7 +309,7 @@ function profileSummary(p: Partial<ReplyProfile>) {
     ironic: 'Иронично',
     categorical: 'Категорично',
     constructive: 'Конструктивно',
-    conciliatory: 'Примирительно',
+    apologetic: 'Примирительно',
   };
   const humMap: Record<string, string> = {
     thanks: 'Спасибо',
@@ -317,9 +322,9 @@ function profileSummary(p: Partial<ReplyProfile>) {
     support: 'Поддержка',
     tact: 'Тактично',
     transparent: 'Честно',
-    confident_no_pressure: 'Уверенно без давления',
-    positive_close: 'Позитивно',
-    offer_choice: 'Выбор',
+    conf_no_pressure: 'Уверенно без давления',
+    positive_end: 'Позитивно',
+    choice: 'Выбор',
     next_steps: 'Шаги',
   };
 
@@ -384,7 +389,7 @@ function profileLabel(p: Partial<ReplyProfile>) {
     ironic: 'Иронично (лёгкий юмор)',
     categorical: 'Категорично (без грубости)',
     constructive: 'Конструктивно',
-    conciliatory: 'Извиняюще/примирительно',
+    apologetic: 'Извиняюще/примирительно',
   };
 
   const humMap: Record<string, string> = {
@@ -398,9 +403,9 @@ function profileLabel(p: Partial<ReplyProfile>) {
     support: 'Поддержка (“вы всё правильно делаете”)',
     tact: 'Тактичность / деликатность',
     transparent: 'Прозрачность (“скажу честно…”)',
-    confident_no_pressure: 'Уверенность без давления',
-    positive_close: 'Позитивное завершение',
-    offer_choice: 'Предложение выбора',
+    conf_no_pressure: 'Уверенность без давления',
+    positive_end: 'Позитивное завершение',
+    choice: 'Предложение выбора',
     next_steps: 'Чёткие следующие шаги',
   };
 
@@ -616,13 +621,21 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
     return sent;
   }
 
-  
-  // 3-дневный free trial
-if (!isTrialActive(ctx)) return showPaywall(ctx);
+  // Access check: plan-based gating
+  const plan = ctx.session.plan;
+  if (plan === 'expired') return showPaywall(ctx);
+  if (plan === 'trial') {
+    if (ctx.session.trial.expiresAt) {
+      // Airtable available — use expiry date as source of truth
+      if (!isTrialActive(ctx)) return showPaywall(ctx);
+    } else {
+      // Airtable not configured — fall back to remaining counter
+      if (ctx.session.trial.remaining <= 0) return showPaywall(ctx);
+    }
+  }
+  // plan === 'optimal' | 'maximum' → no restriction
 
-// Пока trial активен — НЕ списываем remaining.
-// (remaining оставляем для совместимости, потом уберём полностью)
-const tgId = ctx.from?.id;
+  const tgId = ctx.from?.id;
 
 
   const situation = ctx.session.draft.situation ?? '';
@@ -756,8 +769,9 @@ bot.start(async (ctx) => {
       firstName: ctx.from?.first_name,
     });
     trialRemaining = u.trialRemaining ?? 3;
-    (ctx.session.trial.startedAt as any) = (u as any).trialStartedAt ?? undefined;
-    (ctx.session.trial.expiresAt as any) = (u as any).trialExpiresAt ?? undefined;
+    ctx.session.plan = u.plan;
+    ctx.session.trial.startedAt = u.trialStartedAt ?? undefined;
+    ctx.session.trial.expiresAt = u.trialExpiresAt ?? undefined;
 
 
     // 2) если пришли по реф-ссылке — фиксируем навсегда (если ещё не было)

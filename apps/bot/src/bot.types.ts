@@ -2,6 +2,8 @@ import type { Context } from 'telegraf';
 
 export type Mode = string;
 
+export type Plan = 'trial' | 'expired' | 'optimal' | 'maximum';
+
 export type Greet = 'greet' | 'reply';
 
 export type Audience =
@@ -47,7 +49,7 @@ export type ToneKey =
   | 'ironic'
   | 'categorical'
   | 'constructive'
-  | 'conciliatory';
+  | 'apologetic';
 
 export type HumanityKey =
   | 'thanks'
@@ -60,9 +62,9 @@ export type HumanityKey =
   | 'support'
   | 'tact'
   | 'transparent'
-  | 'confident_no_pressure'
-  | 'positive_close'
-  | 'offer_choice'
+  | 'conf_no_pressure'
+  | 'positive_end'
+  | 'choice'
   | 'next_steps';
 
 export type BanKey =
@@ -70,14 +72,14 @@ export type BanKey =
   | 'pressure'
   | 'discounts'
   | 'personal'
-  | 'guilt'
+  | 'shame'
   | 'passive_aggr'
   | 'argue'
-  | 'flatter'
+  | 'flattery'
   | 'legal_threat'
   | 'lie'
   | 'flirt'
-  | 'compare';
+  | 'competitors';
 
 export type EmotionKey =
   | 'restrained'
@@ -108,6 +110,9 @@ export interface BotSession {
   mode: Mode;
   history: Mode[];
 
+  // ✅ план нужен для логики trial/expired/paid
+  plan: Plan;
+
   draft: {
     situation?: string;
     photoFileId?: string;
@@ -121,11 +126,12 @@ export interface BotSession {
 
   variant: number;
 
+  // ✅ 3-дневный trial + совместимость со старым remaining
   trial: {
-  remaining: number; // оставляем для совместимости (пока не трогаем)
-  startedAt?: string; // ISO
-  expiresAt?: string; // ISO
-},
+    remaining: number; // старый лимит (можно оставить)
+    startedAt?: string | null; // ISO
+    expiresAt?: string | null; // ISO
+  };
 
   feedback: { plus: number; minus: number; thinkMore: number };
 

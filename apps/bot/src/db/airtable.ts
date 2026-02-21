@@ -1,14 +1,17 @@
-import Airtable from "airtable";
+import Airtable from 'airtable';
 
 const token = process.env.AIRTABLE_TOKEN;
 const baseId = process.env.AIRTABLE_BASE_ID;
 
-const USERS_TABLE = process.env.AIRTABLE_USERS_TABLE || "Users";
-const REQS_TABLE = process.env.AIRTABLE_REQUESTS_TABLE || "Requests";
+const USERS_TABLE = process.env.AIRTABLE_USERS_TABLE || 'Users';
+const REQS_TABLE = process.env.AIRTABLE_REQUESTS_TABLE || 'Requests';
+const ACCRUALS_TABLE = process.env.AIRTABLE_PARTNER_ACCRUALS_TABLE || 'PartnerAccruals';
+const PAYOUTS_TABLE = process.env.AIRTABLE_PAYOUTS_TABLE || 'Payouts';
 
 const enabled = Boolean(token && baseId);
-
 const base = enabled ? new Airtable({ apiKey: token }).base(baseId!) : null;
+
+type Plan = 'trial' | 'expired' | 'optimal' | 'maximum';
 
 let warned = false;
 function warnOnce(msg: string) {
@@ -17,44 +20,82 @@ function warnOnce(msg: string) {
   console.log(msg);
 }
 
-function numFormula(field: string, value: number) {
-  return `{${field}}=${value}`;
+function normalizePlan(v: any): Plan {
+  const s = String(v ?? '').toLowerCase();
+  if (s === 'trial') return 'trial';
+  if (s === 'expired') return 'expired';
+  if (s === 'optimal') return 'optimal';
+  if (s === 'maximum') return 'maximum';
+  return 'trial';
 }
+
+function addDaysIsoFrom(date: Date, days: number) {
+  return new Date(date.getTime() + days * 24 * 60 * 60 * 1000).toISOString();
+}
+
+function num(v: any): number {
+  const n = typeof v === 'number' ? v : Number(String(v ?? '').replace(',', '.'));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function tgIdFormula(tgId: number) {
+  // tg_id может быть Number или Text
+  return `OR({tg_id}=${tgId}, {tg_id}='${tgId}')`;
+}
+
+function referrerFormula(referrerTgId: number) {
+  const idStr = String(referrerTgId);
+  // referrer_tg_id может быть Text или Number
+  return `OR({referrer_tg_id}='${idStr}', {referrer_tg_id}=${idStr})`;
+}
+
+async function selectAll(tableName: string, opts: any): Promise<any[]> {
+  if (!base) return [];
+  const table = base(tableName);
+
+  // Airtable SDK умеет сразу вернуть все записи без eachPage
+  const records = await table.select(opts).all();
+  return records as any[];
+}
+
 
 async function findUserRecordIdByTgId(tgId: number): Promise<string | null> {
   if (!base) return null;
   const table = base(USERS_TABLE);
+
   const rows = await table
-    .select({ filterByFormula: numFormula("tg_id", tgId), maxRecords: 1 })
+    .select({ filterByFormula: tgIdFormula(tgId), maxRecords: 1 })
     .firstPage();
+
   return rows[0]?.id ?? null;
 }
 
-function addDaysIso(days: number) {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  return d.toISOString();
-}
-
+/**
+ * ensureUser:
+ * - создаёт пользователя если нет
+ * - фиксирует trial_started_at / trial_expires_at (3 дня) один раз
+ * - если trial истёк и plan=trial → ставит plan=expired
+ */
 export async function ensureUser(args: {
   tgId: number;
   username?: string;
   firstName?: string;
 }): Promise<{
   trialRemaining: number;
-  plan: string;
-  trialStartedAt?: string;
-  trialExpiresAt?: string;
+  plan: Plan;
+  trialStartedAt: string | null;
+  trialExpiresAt: string | null;
 }> {
   if (!base) {
     warnOnce('AIRTABLE: disabled (no AIRTABLE_TOKEN/AIRTABLE_BASE_ID)');
-    return { trialRemaining: 3, plan: 'trial' };
+    return { trialRemaining: 3, plan: 'trial', trialStartedAt: null, trialExpiresAt: null };
   }
 
   const table = base(USERS_TABLE);
 
-  const nowIso = new Date().toISOString();
-  const expIso = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const expIso = addDaysIsoFrom(now, 3);
 
   const recordId = await findUserRecordIdByTgId(args.tgId);
 
@@ -66,48 +107,59 @@ export async function ensureUser(args: {
       first_name: args.firstName ?? '',
       plan: 'trial',
       trial_remaining: 3,
-
-      // ✅ 3-дневный trial фиксируется при первом создании
       trial_started_at: nowIso,
       trial_expires_at: expIso,
     });
 
-    const tr = Number(created.fields['trial_remaining'] ?? 3);
-    const plan = String(created.fields['plan'] ?? 'trial');
-
-    const startedAt = String((created.fields as any)['trial_started_at'] ?? nowIso);
-    const expiresAt = String((created.fields as any)['trial_expires_at'] ?? expIso);
-
-    return { trialRemaining: tr, plan, trialStartedAt: startedAt, trialExpiresAt: expiresAt };
+    return {
+      trialRemaining: Number(created.fields['trial_remaining'] ?? 3),
+      plan: normalizePlan(created.fields['plan'] ?? 'trial'),
+      trialStartedAt: String((created.fields as any)['trial_started_at'] ?? nowIso),
+      trialExpiresAt: String((created.fields as any)['trial_expires_at'] ?? expIso),
+    };
   }
 
   // --- EXISTING ---
   const existing = await table.find(recordId);
 
-  const tr = Number(existing.fields['trial_remaining'] ?? 3);
-  const plan = String(existing.fields['plan'] ?? 'trial');
+  const trialRemaining = Number(existing.fields['trial_remaining'] ?? 3);
+  let plan = normalizePlan(existing.fields['plan'] ?? 'trial');
 
-  // ✅ если поля trial пустые (старые записи) — дозаполняем один раз
-  const startedAtRaw = (existing.fields as any)['trial_started_at'];
-  const expiresAtRaw = (existing.fields as any)['trial_expires_at'];
+  const startedRaw = (existing.fields as any)['trial_started_at'];
+  const expiresRaw = (existing.fields as any)['trial_expires_at'];
 
-  const startedAt = startedAtRaw ? String(startedAtRaw) : nowIso;
-  const expiresAt = expiresAtRaw ? String(expiresAtRaw) : expIso;
+  let trialStartedAt: string | null = startedRaw ? String(startedRaw) : null;
+  let trialExpiresAt: string | null = expiresRaw ? String(expiresRaw) : null;
 
-  if (!startedAtRaw || !expiresAtRaw) {
+  // дозаполняем даты trial для старых записей (один раз)
+  if (!trialStartedAt || !trialExpiresAt) {
+    trialStartedAt = trialStartedAt ?? nowIso;
+    trialExpiresAt = trialExpiresAt ?? expIso;
+
     await table.update(recordId, {
-      trial_started_at: startedAt,
-      trial_expires_at: expiresAt,
+      trial_started_at: trialStartedAt,
+      trial_expires_at: trialExpiresAt,
     });
   }
 
-  // аккуратно обновим username/first_name (как у тебя было)
-  await table.update(recordId, {
-    username: args.username ?? '',
-    first_name: args.firstName ?? '',
-  });
+  // если trial истёк и план ещё trial — ставим expired
+  if (plan === 'trial' && trialExpiresAt) {
+    const exp = new Date(trialExpiresAt);
+    if (!Number.isNaN(exp.getTime()) && Date.now() > exp.getTime()) {
+      plan = 'expired';
+      await table.update(recordId, { plan: 'expired' });
+    }
+  }
 
-  return { trialRemaining: tr, plan, trialStartedAt: startedAt, trialExpiresAt: expiresAt };
+  // обновим username/first_name (best effort)
+  await table
+    .update(recordId, {
+      username: args.username ?? '',
+      first_name: args.firstName ?? '',
+    })
+    .catch(() => {});
+
+  return { trialRemaining, plan, trialStartedAt, trialExpiresAt };
 }
 
 export async function updateTrialRemaining(tgId: number, remaining: number) {
@@ -134,66 +186,22 @@ export async function logRequest(args: {
     const table = base(REQS_TABLE);
     await table.create({
       tg_id: args.tgId,
-    
-      model: args.model ?? "",
+      model: args.model ?? '',
       input_tokens: args.inputTokens ?? 0,
       output_tokens: args.outputTokens ?? 0,
       total_tokens: args.totalTokens ?? 0,
       variant: args.variant,
       situation_len: args.situationLen,
+      created_at: args.createdAt.toISOString(),
     });
   } catch (e: any) {
-    console.log("AIRTABLE_LOGREQUEST_ERROR", {
+    console.log('AIRTABLE_LOGREQUEST_ERROR', {
       table: REQS_TABLE,
       msg: e?.message,
       status: e?.status ?? e?.response?.status,
       details: e,
     });
   }
-}
-
-const AIRTABLE_TOKEN = process.env.AIRTABLE_TOKEN;
-const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID;
-const AIRTABLE_USERS_TABLE = process.env.AIRTABLE_USERS_TABLE ?? 'Users';
-
-type AirtableRecord = { id: string; fields: Record<string, any> };
-
-async function airtableRequest(path: string, init?: RequestInit) {
-  if (!AIRTABLE_TOKEN) throw new Error('AIRTABLE_TOKEN missing');
-  if (!AIRTABLE_BASE_ID) throw new Error('AIRTABLE_BASE_ID missing');
-
-  const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${path}`;
-  const res = await fetch(url, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${AIRTABLE_TOKEN}`,
-      'Content-Type': 'application/json',
-      ...(init?.headers ?? {}),
-    },
-  });
-
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const msg = (json as any)?.error?.message ?? JSON.stringify(json);
-    throw new Error(`Airtable ${res.status}: ${msg}`);
-  }
-  return json;
-}
-
-async function findUserByTgId(tgId: number): Promise<AirtableRecord | null> {
-  // совместимость: tg_id может быть Text или Number
-  const formula = `OR({tg_id}='${tgId}', {tg_id}=${tgId})`;
-  const qs = new URLSearchParams({
-    maxRecords: '1',
-    filterByFormula: formula,
-  });
-
-  const data = await airtableRequest(
-    `${encodeURIComponent(AIRTABLE_USERS_TABLE)}?${qs.toString()}`
-  );
-
-  const rec = (data as any)?.records?.[0] as AirtableRecord | undefined;
-  return rec ?? null;
 }
 
 /**
@@ -203,80 +211,40 @@ async function findUserByTgId(tgId: number): Promise<AirtableRecord | null> {
 export async function setReferrerOnce(opts: {
   inviteeTgId: number;
   referrerTgId: number;
-  source?: string;      // например: "start"
-  payload?: string;     // raw payload
+  source?: string;
+  payload?: string;
 }): Promise<{ status: 'set' | 'already' | 'invitee_missing' | 'self' }> {
+  if (!base) return { status: 'invitee_missing' };
+
   const { inviteeTgId, referrerTgId, source = 'start', payload } = opts;
 
   if (inviteeTgId === referrerTgId) return { status: 'self' };
 
-  const invitee = await findUserByTgId(inviteeTgId);
-  if (!invitee) return { status: 'invitee_missing' };
+  const recordId = await findUserRecordIdByTgId(inviteeTgId);
+  if (!recordId) return { status: 'invitee_missing' };
 
-  const current = invitee.fields?.referrer_tg_id;
+  const table = base(USERS_TABLE);
+  const rec = await table.find(recordId);
+
+  const current = (rec.fields as any)?.referrer_tg_id;
   if (current) return { status: 'already' };
 
-  const patch = {
-    fields: {
-      referrer_tg_id: String(referrerTgId),
-      referred_at: new Date().toISOString(),
-      ref_source: source,
-      ...(payload ? { ref_payload: payload } : {}),
-    },
-  };
-
-  await airtableRequest(
-    `${encodeURIComponent(AIRTABLE_USERS_TABLE)}/${invitee.id}`,
-    { method: 'PATCH', body: JSON.stringify(patch) }
-  );
+  await table.update(recordId, {
+    referrer_tg_id: String(referrerTgId),
+    referred_at: new Date().toISOString(),
+    ref_source: source,
+    ...(payload ? { ref_payload: payload } : {}),
+  });
 
   return { status: 'set' };
 }
 
-const AIRTABLE_REQUESTS_TABLE = process.env.AIRTABLE_REQUESTS_TABLE ?? 'Requests';
-const AIRTABLE_PARTNER_ACCRUALS_TABLE = process.env.AIRTABLE_PARTNER_ACCRUALS_TABLE ?? 'PartnerAccruals';
-const AIRTABLE_PAYOUTS_TABLE = process.env.AIRTABLE_PAYOUTS_TABLE ?? 'Payouts';
-
-async function listAllRecords(opts: {
-  table: string;
-  filterByFormula?: string;
-  fields?: string[];
-  pageSize?: number;
-}): Promise<AirtableRecord[]> {
-  const { table, filterByFormula, fields, pageSize = 100 } = opts;
-
-  let offset: string | undefined;
-  const out: AirtableRecord[] = [];
-
-  for (;;) {
-    const qs = new URLSearchParams();
-    qs.set('pageSize', String(pageSize));
-    if (filterByFormula) qs.set('filterByFormula', filterByFormula);
-    if (fields?.length) fields.forEach((f) => qs.append('fields[]', f));
-    if (offset) qs.set('offset', offset);
-
-    const data = await airtableRequest(`${encodeURIComponent(table)}?${qs.toString()}`);
-    const records = ((data as any)?.records ?? []) as AirtableRecord[];
-    out.push(...records);
-
-    offset = (data as any)?.offset;
-    if (!offset) break;
-  }
-
-  return out;
-}
-
-function num(v: any): number {
-  const n = typeof v === 'number' ? v : Number(String(v ?? '').replace(',', '.'));
-  return Number.isFinite(n) ? n : 0;
-}
-
 /**
  * Статистика партнёра:
- * - приглашено (Users where referrer_tg_id = me)
- * - активных подписок среди приглашённых (если есть поля plan/plan_status)
- * - начислено / к выводу (если есть таблицы PartnerAccruals / Payouts)
- * - моих ответов (Requests where tg_id = me)
+ * - invited: Users where referrer_tg_id = me
+ * - invitedActive: среди приглашённых с plan optimal/maximum
+ * - accrued / available: по PartnerAccruals/Payouts (если таблицы уже есть)
+ * - myAnswers: количество Requests по tg_id
  */
 export async function getPartnerStats(referrerTgId: number): Promise<{
   invited: number;
@@ -286,46 +254,50 @@ export async function getPartnerStats(referrerTgId: number): Promise<{
   available: number | null;
   myAnswers: number | null;
 }> {
+  if (!base) {
+    return {
+      invited: 0,
+      invitedActive: null,
+      accrued: null,
+      reservedToPayout: null,
+      available: null,
+      myAnswers: null,
+    };
+  }
+
   const idStr = String(referrerTgId);
 
   // 1) Приглашённые
-let invited = 0;
-let invitedActive: number | null = null;
+  let invited = 0;
+  let invitedActive: number | null = null;
 
-try {
-  // Формула на всякий случай поддерживает и текст, и число
-  const formula = `OR({referrer_tg_id}='${idStr}', {referrer_tg_id}=${idStr})`;
+  try {
+    const invitees = await selectAll(USERS_TABLE, {
+      filterByFormula: referrerFormula(referrerTgId),
+      fields: ['plan', 'referrer_tg_id'],
+      pageSize: 100,
+    });
 
-  // ВАЖНО: НЕ запрашиваем несуществующее plan_status
-  const invitees = await listAllRecords({
-    table: AIRTABLE_USERS_TABLE,
-    filterByFormula: formula,
-    fields: ['plan', 'referrer_tg_id'], // оба поля есть у тебя в Users
-  });
+    invited = invitees.length;
+    invitedActive = invitees.filter((r) => {
+      const p = normalizePlan((r.fields as any)?.plan);
+      return p === 'optimal' || p === 'maximum';
+    }).length;
+  } catch (e) {
+    console.error('INVITEES_QUERY_ERROR', e);
+    invited = 0;
+    invitedActive = null;
+  }
 
-  invited = invitees.length;
-
-  // Пока считаем активными тех, у кого тариф не trial/expired, а optimal/maximum
-  invitedActive = invitees.filter((r) => {
-    const plan = String(r.fields?.plan ?? '').toLowerCase();
-    return plan === 'optimal' || plan === 'maximum';
-  }).length;
-} catch (e) {
-  console.error('INVITEES_QUERY_ERROR', e);
-  invited = 0;
-  invitedActive = null;
-}
-
-
-  // 2) Начисления (если таблица уже есть)
+  // 2) Начислено
   let accrued: number | null = null;
   try {
-    const rows = await listAllRecords({
-      table: AIRTABLE_PARTNER_ACCRUALS_TABLE,
+    const rows = await selectAll(ACCRUALS_TABLE, {
       filterByFormula: `AND({referrer_tg_id}='${idStr}', {status}='accrued')`,
       fields: ['reward'],
+      pageSize: 100,
     });
-    accrued = rows.reduce((s, r) => s + num(r.fields?.reward), 0);
+    accrued = rows.reduce((s, r) => s + num((r.fields as any)?.reward), 0);
   } catch {
     accrued = null;
   }
@@ -333,29 +305,28 @@ try {
   // 3) Зарезервировано к выплате (requested + paid)
   let reservedToPayout: number | null = null;
   try {
-    const rows = await listAllRecords({
-      table: AIRTABLE_PAYOUTS_TABLE,
+    const rows = await selectAll(PAYOUTS_TABLE, {
       filterByFormula: `AND({referrer_tg_id}='${idStr}', OR({status}='requested', {status}='paid'))`,
       fields: ['amount'],
+      pageSize: 100,
     });
-    reservedToPayout = rows.reduce((s, r) => s + num(r.fields?.amount), 0);
+    reservedToPayout = rows.reduce((s, r) => s + num((r.fields as any)?.amount), 0);
   } catch {
     reservedToPayout = null;
   }
 
-  // 4) Доступно = начислено - зарезервировано
   let available: number | null = null;
   if (accrued !== null && reservedToPayout !== null) {
     available = Math.max(accrued - reservedToPayout, 0);
   }
 
-  // 5) Мои ответы (Requests)
+  // 4) Мои ответы (Requests)
   let myAnswers: number | null = null;
   try {
-    const rows = await listAllRecords({
-      table: AIRTABLE_REQUESTS_TABLE,
+    const rows = await selectAll(REQS_TABLE, {
       filterByFormula: `OR({tg_id}='${idStr}', {tg_id}=${idStr})`,
       fields: ['tg_id'],
+      pageSize: 100,
     });
     myAnswers = rows.length;
   } catch {

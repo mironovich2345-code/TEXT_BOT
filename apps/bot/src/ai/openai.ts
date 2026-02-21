@@ -65,7 +65,7 @@ const TONE: Record<string, string> = {
   ironic: "Иронично (лёгкий юмор)",
   categorical: "Категорично (без грубости)",
   constructive: "Конструктивно (фокус на решение)",
-  conciliatory: "Извиняюще/примирительно",
+  apologetic: "Извиняюще/примирительно",
 };
 
 const HUM: Record<string, string> = {
@@ -79,9 +79,9 @@ const HUM: Record<string, string> = {
   support: "Поддержка",
   tact: "Тактичность / деликатность",
   transparent: "Прозрачность (“скажу честно…”)",
-  confident_no_pressure: "Уверенность без давления",
-  positive_close: "Позитивное завершение",
-  offer_choice: "Предложение выбора",
+  conf_no_pressure: "Уверенность без давления",
+  positive_end: "Позитивное завершение",
+  choice: "Предложение выбора",
   next_steps: "Чёткие следующие шаги",
 };
 
@@ -90,14 +90,14 @@ const BAN: Record<string, string> = {
   pressure: "Не давить",
   discounts: "Без скидок/торга",
   personal: "Без перехода на личности",
-  guilt: "Без вины/стыда",
+  shame: "Без вины/стыда",
   passive_aggr: "Без пассивной агрессии",
   argue: "Не спорить/не конфликтовать",
-  flatter: "Без чрезмерной лести",
+  flattery: "Без чрезмерной лести",
   legal_threat: "Без юр. угроз",
   lie: "Без лжи/приукрашивания",
   flirt: "Без флирта",
-  compare: "Не сравнивать с конкурентами",
+  competitors: "Не сравнивать с конкурентами",
 };
 
 const EMO: Record<string, string> = {
