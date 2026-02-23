@@ -145,6 +145,66 @@ function profileToLines(p: ReplyProfile) {
   ].join("\n");
 }
 
+export async function transcribeVoice(buffer: Buffer): Promise<string> {
+  const model = process.env.OPENAI_TRANSCRIBE_MODEL ?? 'gpt-4o-mini-transcribe';
+  const file = new File([new Uint8Array(buffer)], 'voice.ogg', { type: 'audio/ogg' });
+  try {
+    const resp = await client.audio.transcriptions.create({ file, model } as any);
+    return (resp.text ?? '').trim();
+  } catch (e: any) {
+    const status = e?.status ?? e?.response?.status;
+    if (status === 403 && String(e?.message ?? '').includes('Country, region, or territory not supported')) {
+      throw new OpenAIRegionBlockedError();
+    }
+    throw e;
+  }
+}
+
+export async function extractSituationFromImage(buffer: Buffer, caption?: string): Promise<string> {
+  const model = process.env.OPENAI_VISION_MODEL ?? 'gpt-4o-mini';
+  const base64 = buffer.toString('base64');
+  const captionNote = caption ? `\nДополнительный контекст от пользователя: "${caption}"` : '';
+  const prompt =
+    'Ты помощник для извлечения смысла из скриншота переписки.' +
+    captionNote +
+    '\n1) Извлеки ключевой текст (если много — кратко).' +
+    '\n2) Сформулируй «Ситуацию» в 1–3 предложениях: кто кому пишет и что нужно ответить.' +
+    '\nВерни результат строго в JSON: { "extracted_text": "...", "situation": "..." }';
+  try {
+    const resp = await client.chat.completions.create({
+      model,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}` } },
+            { type: 'text', text: prompt },
+          ] as any,
+        },
+      ],
+      max_tokens: 500,
+      temperature: 0.3,
+    });
+    const raw = (resp.choices[0]?.message?.content ?? '').trim();
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        const parsed = JSON.parse(jsonMatch[0]);
+        return (parsed.situation ?? parsed.extracted_text ?? '').trim();
+      } catch {
+        return raw;
+      }
+    }
+    return raw;
+  } catch (e: any) {
+    const status = e?.status ?? e?.response?.status;
+    if (status === 403 && String(e?.message ?? '').includes('Country, region, or territory not supported')) {
+      throw new OpenAIRegionBlockedError();
+    }
+    throw e;
+  }
+}
+
 export async function generateReplyAI(args: {
   situation: string;
   profile: ReplyProfile;

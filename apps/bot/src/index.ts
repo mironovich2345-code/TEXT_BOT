@@ -8,8 +8,7 @@ import { logRequest } from './db/airtable';
 import http from 'node:http';
 
 import type { BotContext, BotSession, Mode, ReplyProfile } from './bot.types';
-import { generateReplyAI } from './ai/openai';
-import { OpenAIRegionBlockedError } from './ai/openai';
+import { generateReplyAI, OpenAIRegionBlockedError, transcribeVoice, extractSituationFromImage } from './ai/openai';
 
 import {
   mainMenu,
@@ -95,6 +94,46 @@ async function safeDelete(ctx: BotContext, messageId: number) {
   } catch {
     // best-effort
   }
+}
+
+async function downloadTelegramFile(ctx: BotContext, fileId: string): Promise<Buffer> {
+  const link = await ctx.telegram.getFileLink(fileId);
+  const resp = await fetch(link.href);
+  if (!resp.ok) throw new Error(`TG_FILE_DOWNLOAD_FAILED: ${resp.status}`);
+  const ab = await resp.arrayBuffer();
+  return Buffer.from(ab);
+}
+
+async function handleSituationReady(ctx: BotContext, situation: string, editMsgId?: number) {
+  ctx.session.draft.situation = situation;
+  ctx.session.variant = 0;
+
+  const isPlanMax = ctx.session.plan === 'maximum';
+  const flowText = isPlanMax
+    ? 'Ситуацию получил ✅\n\nВыбери пресет:'
+    : 'Ситуацию получил ✅\n\nВыбери, как подготовить ответ:';
+  const keyboard = isPlanMax ? maxPresetListInline() : afterSituationInline();
+
+  if (isPlanMax) {
+    initPresets(ctx);
+    setMode(ctx, 'preset_pick');
+  } else {
+    setMode(ctx, 'after_situation');
+  }
+
+  if (editMsgId && ctx.chat) {
+    try {
+      await ctx.telegram.editMessageText(ctx.chat.id, editMsgId, undefined, flowText, keyboard as any);
+      ctx.session.ui.flowMsgId = editMsgId;
+      return;
+    } catch {
+      // fall through to send new message
+    }
+  }
+
+  const sent = await ctx.reply(flowText, keyboard);
+  trackBotMessage(ctx, sent.message_id);
+  ctx.session.ui.flowMsgId = sent.message_id;
 }
 
 bot.use(async (ctx, next) => {
@@ -1286,53 +1325,105 @@ bot.action(/^pay:connect:(optimal|maximum)$/, async (ctx) => {
 
 
 
-// -------------------- incoming: photo --------------------
-bot.on('photo', async (ctx) => {
+// -------------------- incoming: voice --------------------
+bot.on('voice', async (ctx) => {
   const msg: any = ctx.message;
-  const photos = msg?.photo as Array<{ file_id: string }> | undefined;
-  const caption = (msg?.caption ?? '').trim();
-
-  const best = photos?.[photos.length - 1];
-  const fileId = best?.file_id;
-
-  if (!fileId) {
-    const sent = await ctx.reply('Не смог прочитать фото. Попробуй отправить ещё раз.', navMenu());
-    trackBotMessage(ctx, sent.message_id);
-    return;
-  }
+  const fileId = msg?.voice?.file_id as string | undefined;
+  if (!fileId) return;
 
   if (ctx.session.mode !== 'wait_situation') {
-    const sent = await ctx.reply('Фото получил ✅\n\nНажми “🚀 Начать” → “📝 Описать ситуацию”.', mainMenu());
+    const sent = await ctx.reply('Нажми «📝 Описать ситуацию» в меню.', mainMenu());
     trackBotMessage(ctx, sent.message_id);
     return;
   }
 
-  ctx.session.draft.photoFileId = fileId;
-  ctx.session.draft.photoCaption = caption || undefined;
-
-  if (!caption) {
+  if (ctx.session.plan !== 'maximum') {
     const sent = await ctx.reply(
-      'Скрин получил ✅\n\nНапиши одним сообщением, что на нём и какой ответ нужно подготовить. (OCR позже)',
-      navMenu()
+      'Распознавание голосовых доступно только на Максимальном тарифе.\n\nОпиши ситуацию текстом.',
+      mainMenu()
     );
     trackBotMessage(ctx, sent.message_id);
     return;
   }
 
-  ctx.session.draft.situation = caption;
-  ctx.session.variant = 0;
+  if (!process.env.OPENAI_API_KEY || OPENAI_DISABLED_RUNTIME) {
+    const sent = await ctx.reply('Голосовые не поддерживаются без OpenAI API. Отправь текст.', navMenu());
+    trackBotMessage(ctx, sent.message_id);
+    return;
+  }
 
-  if (ctx.session.plan === 'maximum') {
-    initPresets(ctx);
-    setMode(ctx, 'preset_pick');
-    const sent = await ctx.reply('Ситуацию получил ✅\n\nВыбери пресет:', maxPresetListInline());
+  const statusMsg = await ctx.reply('🎙️ Распознаю голосовое…');
+  trackBotMessage(ctx, statusMsg.message_id);
+  ctx.session.ui.flowMsgId = statusMsg.message_id;
+
+  try {
+    const buffer = await downloadTelegramFile(ctx, fileId);
+    const text = await transcribeVoice(buffer);
+
+    if (!text) {
+      await ctx.telegram.editMessageText(ctx.chat!.id, statusMsg.message_id, undefined,
+        '❌ Не удалось распознать голосовое. Отправь ситуацию текстом.').catch(() => {});
+      return;
+    }
+
+    return handleSituationReady(ctx, text, statusMsg.message_id);
+  } catch (e) {
+    if (e instanceof OpenAIRegionBlockedError) OPENAI_DISABLED_RUNTIME = true;
+    console.error('VOICE_TRANSCRIBE_ERROR', e);
+    await ctx.telegram.editMessageText(ctx.chat!.id, statusMsg.message_id, undefined,
+      '❌ Ошибка при распознавании. Попробуй отправить текстом.').catch(() => {});
+  }
+});
+
+// -------------------- incoming: photo --------------------
+bot.on('photo', async (ctx) => {
+  const msg: any = ctx.message;
+  const photos = msg?.photo as Array<{ file_id: string }> | undefined;
+  const caption = (msg?.caption ?? '').trim();
+  const best = photos?.[photos.length - 1];
+  const fileId = best?.file_id;
+
+  if (!fileId) {
+    const sent = await ctx.reply('Не смог прочитать фото. Попробуй ещё раз.', navMenu());
     trackBotMessage(ctx, sent.message_id);
-    ctx.session.ui.flowMsgId = sent.message_id;
-  } else {
-    setMode(ctx, 'after_situation');
-    const sent = await ctx.reply('Ситуацию получил ✅\n\nВыбери, как подготовить ответ:', afterSituationInline());
+    return;
+  }
+
+  if (ctx.session.mode !== 'wait_situation') {
+    const sent = await ctx.reply('Нажми «📝 Описать ситуацию» в меню.', mainMenu());
     trackBotMessage(ctx, sent.message_id);
-    ctx.session.ui.flowMsgId = sent.message_id;
+    return;
+  }
+
+  const statusMsg = await ctx.reply('🖼️ Считываю текст со скриншота…');
+  trackBotMessage(ctx, statusMsg.message_id);
+  ctx.session.ui.flowMsgId = statusMsg.message_id;
+
+  if (!process.env.OPENAI_API_KEY || OPENAI_DISABLED_RUNTIME) {
+    if (caption) {
+      return handleSituationReady(ctx, caption, statusMsg.message_id);
+    }
+    await ctx.telegram.editMessageText(ctx.chat!.id, statusMsg.message_id, undefined,
+      'Скрин получил ✅\n\nДобавь подпись к фото с описанием ситуации — тогда смогу помочь.').catch(() => {});
+    return;
+  }
+
+  try {
+    const buffer = await downloadTelegramFile(ctx, fileId);
+    const situation = await extractSituationFromImage(buffer, caption || undefined);
+
+    if (!situation) {
+      await ctx.telegram.editMessageText(ctx.chat!.id, statusMsg.message_id, undefined,
+        '❌ Не удалось прочитать скриншот. Перешли текст или опиши ситуацию текстом.').catch(() => {});
+      return;
+    }
+
+    return handleSituationReady(ctx, situation, statusMsg.message_id);
+  } catch (e) {
+    if (e instanceof OpenAIRegionBlockedError) OPENAI_DISABLED_RUNTIME = true;
+    console.error('PHOTO_OCR_ERROR', e);
+    await ctx.telegram.editMessageText(ctx.chat!.id, statusMsg.message_id, undefined,
+      '❌ Ошибка при распознавании. Перешли текст или опиши ситуацию текстом.').catch(() => {});
   }
 });
 
@@ -1356,21 +1447,7 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  ctx.session.draft.situation = situation;
-  ctx.session.variant = 0;
-
-  if (ctx.session.plan === 'maximum') {
-    initPresets(ctx);
-    setMode(ctx, 'preset_pick');
-    const sent = await ctx.reply('Ситуацию получил ✅\n\nВыбери пресет:', maxPresetListInline());
-    trackBotMessage(ctx, sent.message_id);
-    ctx.session.ui.flowMsgId = sent.message_id;
-  } else {
-    setMode(ctx, 'after_situation');
-    const sent = await ctx.reply('Ситуацию получил ✅\n\nВыбери, как подготовить ответ:', afterSituationInline());
-    trackBotMessage(ctx, sent.message_id);
-    ctx.session.ui.flowMsgId = sent.message_id;
-  }
+  return handleSituationReady(ctx, situation);
 });
 
 // -------------------- preset actions --------------------
