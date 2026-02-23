@@ -4,7 +4,7 @@ import { Markup } from 'telegraf';
 export const BTN_START = '📝 Описать ситуацию';
 export const BTN_SUPPORT = '❓ Помощь';
 export const BTN_TARIFF = '💳 Мой тариф';
-export const BTN_PARTNER = '🤝 Партнёрка';
+export const BTN_PARTNER = '🤝 Партнерская программа';
 
 export const BTN_HOME = '🏠 В меню';
 export const BTN_BACK = '⬅️ Назад';
@@ -332,13 +332,22 @@ export const generateInline = () => ({
 
 // После ситуации на maximum — выбор пресета для генерации
 export function maxPresetListInline() {
-  return Markup.inlineKeyboard([
-    [Markup.button.callback('💰 Продажи', 'preset:pick:sales')],
-    [Markup.button.callback('👔 Боссу', 'preset:pick:boss')],
-    [Markup.button.callback('❤️ Личное', 'preset:pick:personal')],
-    [Markup.button.callback('⭐ Мой пресет', 'preset:pick:my')],
-    [Markup.button.callback('🏠 В меню', 'nav:home')],
-  ]);
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: '💰 Продажи', callback_data: 'preset:pick:sales' },
+          { text: '🧑‍💼 Боссу', callback_data: 'preset:pick:boss' },
+        ],
+        [
+          { text: '❤️ Личное', callback_data: 'preset:pick:personal' },
+          { text: '⭐ Мой пресет', callback_data: 'preset:pick:my' },
+        ],
+        [{ text: '📝 Новая ситуация', callback_data: 'as:new_custom' }],
+        [{ text: '🏠 В меню', callback_data: 'nav:home' }],
+      ],
+    },
+  };
 }
 
 // Экран "Задать пресет ответов" — список пресетов для настройки

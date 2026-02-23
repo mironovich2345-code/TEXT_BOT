@@ -1399,6 +1399,23 @@ bot.action(/^preset:select:(sales|boss|personal|my)$/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const key = (ctx.match as any)[1] as 'sales' | 'boss' | 'personal' | 'my';
 
+  // Системные пресеты доступны только на maximum
+  if (key !== 'my' && ctx.session.plan !== 'maximum') {
+    return sendOrEditFlow(
+      ctx,
+      'Пресеты «Продажи», «Боссу», «Личное» доступны только на Максимальном тарифе.\nИспользуйте «Мой пресет» или подключите Максимальный.',
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '⭐ Мой пресет', callback_data: 'preset:select:my' }],
+            [{ text: '💳 Мой тариф', callback_data: 'tar:back' }],
+            [{ text: '🏠 В меню', callback_data: 'nav:home' }],
+          ],
+        },
+      }
+    );
+  }
+
   ctx.session.presetSelected = key;
   initPresets(ctx);
   const preset = ctx.session.presets![key];
