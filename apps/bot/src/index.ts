@@ -804,32 +804,27 @@ bot.hears(BTN_SUPPORT, async (ctx) => {
 type PlanKey = 'trial' | 'optimal' | 'maximum';
 
 function getCurrentPlan(ctx: BotContext): PlanKey {
-  // если позже начнёшь хранить plan в Airtable — сюда легко подключим
-  const v = getUiVal<string | null>(ctx, 'planType', null);
-  if (v === 'optimal' || v === 'maximum' || v === 'trial') return v;
+  const plan = ctx.session.plan;
+  if (plan === 'optimal' || plan === 'maximum') return plan;
   return 'trial';
 }
 
-function planLimitText(ctx: BotContext, plan: PlanKey) {
-  if (plan === 'trial') return `${ctx.session.trial.remaining} бесплатных ответов`;
+function planLimitText(_ctx: BotContext, plan: PlanKey) {
+  if (plan === 'trial') return '100 ответов в день';
   return '∞ (неограниченно)';
 }
 
+function fmtDate(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
+}
+
 function planRenewText(ctx: BotContext, plan: PlanKey) {
-  // пока нет оплаты — показываем “—”
-  const until = getUiVal<string | null>(ctx, 'planUntil', null);
-  if (!until) return '—';
-
-  const t = new Date(until).getTime();
-  if (Number.isNaN(t)) return '—';
-
-  const diff = t - Date.now();
-  if (diff <= 0) return '0';
-
-  const days = Math.floor(diff / 86400000);
-  const hours = Math.floor((diff % 86400000) / 3600000);
-  if (days > 0) return `${days} дн ${hours} ч`;
-  return `${Math.max(hours, 1)} ч`;
+  if (plan === 'trial') return fmtDate(ctx.session.trial.expiresAt);
+  // для платных планов — пока нет поля до_когда
+  return '—';
 }
 
 function availableFeatures(plan: PlanKey): string[] {
@@ -857,23 +852,36 @@ function availableFeatures(plan: PlanKey): string[] {
 function currentTariffText(ctx: BotContext) {
   const plan = getCurrentPlan(ctx);
 
-  const name = plan === 'optimal' ? 'Оптимальный' : plan === 'maximum' ? 'Максимальный' : 'Trial';
+  const name =
+    plan === 'optimal' ? 'Оптимальный' : plan === 'maximum' ? 'Максимальный' : 'Бесплатный';
 
   const lines: string[] = [
     `Текущий тариф — ${name}`,
     `Лимит — ${planLimitText(ctx, plan)}`,
-    `Обновится через — ${planRenewText(ctx, plan)}`,
+    `Доступен до — ${planRenewText(ctx, plan)}`,
     ``,
     `Доступно:`,
     ...availableFeatures(plan).map((x) => `- ${x}`),
-    ``,
-    `Улучшить тариф?`,
   ];
+
+  if (plan !== 'maximum') {
+    lines.push(``);
+    lines.push(`Улучшить тариф?`);
+  }
 
   return lines.join('\n');
 }
 
-function tariffChooseKeyboard() {
+function tariffChooseKeyboard(plan: PlanKey = 'trial') {
+  if (plan === 'maximum') {
+    return {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '🏠 В меню', callback_data: 'nav:home' }],
+        ],
+      },
+    };
+  }
   return {
     reply_markup: {
       inline_keyboard: [
@@ -941,7 +949,21 @@ bot.hears(BTN_TARIFF, async (ctx) => {
   await cleanupUi(ctx);
   setMode(ctx, 'tariff');
 
-  return sendOrEditFlow(ctx, currentTariffText(ctx), tariffChooseKeyboard());
+  try {
+    const u = await ensureUser({
+      tgId: ctx.from!.id,
+      username: ctx.from?.username,
+      firstName: ctx.from?.first_name,
+    });
+    ctx.session.plan = u.plan;
+    ctx.session.trial.startedAt = u.trialStartedAt ?? undefined;
+    ctx.session.trial.expiresAt = u.trialExpiresAt ?? undefined;
+  } catch (e) {
+    console.error('TARIFF_ENSURE_USER_ERROR', e);
+  }
+
+  const plan = getCurrentPlan(ctx);
+  return sendOrEditFlow(ctx, currentTariffText(ctx), tariffChooseKeyboard(plan));
 });
 
 
@@ -1124,7 +1146,8 @@ bot.action('tar:unsubscribe', async (ctx) => {
 bot.action('tar:back', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   setMode(ctx, 'tariff');
-  return sendOrEditFlow(ctx, currentTariffText(ctx), tariffChooseKeyboard());
+  const plan = getCurrentPlan(ctx);
+  return sendOrEditFlow(ctx, currentTariffText(ctx), tariffChooseKeyboard(plan));
 });
 
 bot.action('tar:plan:optimal', async (ctx) => {

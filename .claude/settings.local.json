@@ -3,7 +3,9 @@
     "allow": [
       "Bash(pnpm -C apps/bot exec tsc:*)",
       "Bash(echo:*)",
-      "Bash(pnpm -C apps/bot build:*)"
+      "Bash(pnpm -C apps/bot build:*)",
+      "Bash(npx tsc:*)",
+      "Bash(pnpm exec tsc:*)"
     ]
   }
 }

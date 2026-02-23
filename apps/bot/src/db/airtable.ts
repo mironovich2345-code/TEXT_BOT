@@ -24,7 +24,7 @@ function normalizePlan(v: any): Plan {
   const s = String(v ?? '').toLowerCase();
   if (s === 'trial') return 'trial';
   if (s === 'expired') return 'expired';
-  if (s === 'optimal') return 'optimal';
+  if (s === 'optimal' || s === 'active') return 'optimal'; // 'active' в Airtable → 'optimal'
   if (s === 'maximum') return 'maximum';
   return 'trial';
 }
