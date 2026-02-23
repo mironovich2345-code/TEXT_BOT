@@ -5,7 +5,8 @@
       "Bash(echo:*)",
       "Bash(pnpm -C apps/bot build:*)",
       "Bash(npx tsc:*)",
-      "Bash(pnpm exec tsc:*)"
+      "Bash(pnpm exec tsc:*)",
+      "Bash(pnpm --filter bot exec tsc:*)"
     ]
   }
 }

@@ -144,7 +144,16 @@ export interface BotSession {
     resultMsgId?: number;
   };
 
-  stdReturnTo: 'menu' | 'answer_after_situation';
+  stdReturnTo: 'menu' | 'answer_after_situation' | 'preset_detail';
+
+  // Пресеты (maximum plan)
+  presets?: {
+    sales: ReplyProfile;
+    boss: ReplyProfile;
+    personal: ReplyProfile;
+    my: ReplyProfile;
+  };
+  presetSelected?: 'sales' | 'boss' | 'personal' | 'my';
 }
 
 export type BotContext = Context & { session: BotSession };

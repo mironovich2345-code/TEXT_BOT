@@ -1,22 +1,23 @@
 import { Markup } from 'telegraf';
 
-// Главное меню (только 4 пункта)
-export const BTN_START = '🚀 Начать';
-export const BTN_SUPPORT = '🆘 Поддержка';
+// Главное меню
+export const BTN_START = '📝 Описать ситуацию';
+export const BTN_SUPPORT = '❓ Помощь';
 export const BTN_TARIFF = '💳 Мой тариф';
-export const BTN_PARTNER = '🤝 Партнерская программа';
+export const BTN_PARTNER = '🤝 Партнёрка';
 
 export const BTN_HOME = '🏠 В меню';
 export const BTN_BACK = '⬅️ Назад';
 
-export const BTN_SETTINGS = '🧰 Задать настройки ответа';
+export const BTN_SETTINGS = '🎛 Задать пресет ответов';
 
 // Reply клавиатура: всегда “под рукой”
 export function mainMenu() {
   return Markup.keyboard([
     [BTN_START],
+    [BTN_TARIFF],
     [BTN_SETTINGS],
-    [BTN_TARIFF, BTN_PARTNER],
+    [BTN_PARTNER],
     [BTN_SUPPORT],
   ])
     .resize()
@@ -38,7 +39,7 @@ export function startInlineMenu() {
 // Inline: после получения ситуации
 export function afterSituationInline() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback('✅ Ответ стандарт', 'as:use_std')],
+    [Markup.button.callback('✅ Мой стандарт', 'as:use_std')],
     [Markup.button.callback('🆕 Новая ситуация', 'as:new_custom')],
     [Markup.button.callback('🏠 В меню', 'nav:home')],
   ]);
@@ -327,3 +328,72 @@ export const generateInline = () => ({
   },
 });
 
+// ================== ПРЕСЕТЫ ==================
+
+// После ситуации на maximum — выбор пресета для генерации
+export function maxPresetListInline() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback('💰 Продажи', 'preset:pick:sales')],
+    [Markup.button.callback('👔 Боссу', 'preset:pick:boss')],
+    [Markup.button.callback('❤️ Личное', 'preset:pick:personal')],
+    [Markup.button.callback('⭐ Мой пресет', 'preset:pick:my')],
+    [Markup.button.callback('🏠 В меню', 'nav:home')],
+  ]);
+}
+
+// Экран "Задать пресет ответов" — список пресетов для настройки
+export function presetListInline() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback('💰 Продажи', 'preset:select:sales')],
+    [Markup.button.callback('👔 Боссу', 'preset:select:boss')],
+    [Markup.button.callback('❤️ Личное', 'preset:select:personal')],
+    [Markup.button.callback('⭐ Мой пресет', 'preset:select:my')],
+    [Markup.button.callback('🏠 В меню', 'nav:home')],
+  ]);
+}
+
+// Экран параметров конкретного пресета
+export function presetDetailInline(key: string) {
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '✅ По умолчанию', callback_data: `preset:default:${key}` }],
+        [{ text: '✏️ Изменить', callback_data: `preset:edit:${key}` }],
+        [{ text: '⬅️ Назад', callback_data: 'preset:list' }],
+        [{ text: '🏠 В меню', callback_data: 'nav:home' }],
+      ],
+    },
+  };
+}
+
+// ================== ПОМОЩЬ ==================
+
+// Меню помощи: связаться + инструкция
+export function helpMenuInline() {
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '🤝 Связаться', url: 'https://t.me/mironovich_d' }],
+        [{ text: '📖 Инструкция', callback_data: 'help:instruction' }],
+        [{ text: '🏠 В меню', callback_data: 'nav:home' }],
+      ],
+    },
+  };
+}
+
+// Навигация по шагам инструкции (step: 1..5)
+export function instructionNavInline(step: number) {
+  const total = 5;
+  const nav: Array<{ text: string; callback_data: string }> = [];
+  if (step > 1) nav.push({ text: '⬅️ Назад', callback_data: `help:step:${step - 1}` });
+  if (step < total) nav.push({ text: '➡️ Далее', callback_data: `help:step:${step + 1}` });
+  return {
+    parse_mode: 'HTML' as const,
+    reply_markup: {
+      inline_keyboard: [
+        ...(nav.length ? [nav] : []),
+        [{ text: '🏠 В меню', callback_data: 'nav:home' }],
+      ],
+    },
+  };
+}

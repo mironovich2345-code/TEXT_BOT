@@ -14,7 +14,6 @@ import { OpenAIRegionBlockedError } from './ai/openai';
 import {
   mainMenu,
   navMenu,
-  startInlineMenu,
   afterSituationInline,
   tariffInline,
   partnerInline,
@@ -31,6 +30,11 @@ import {
   pickEmotionInline,
   pickFormatInline,
   generateInline,
+  maxPresetListInline,
+  presetListInline,
+  presetDetailInline,
+  helpMenuInline,
+  instructionNavInline,
 
   BTN_START,
   BTN_SUPPORT,
@@ -128,8 +132,34 @@ function isDuplicateAction(ctx: BotContext, action: string, windowMs = 2000) {
   return false;
 }
 
+// -------------------- instruction screens --------------------
+const INSTRUCTION_SCREENS: Record<number, string> = {
+  1: '📝 <b>Шаг 1 — Описать ситуацию</b>\n\nНажми кнопку «📝 Описать ситуацию» и отправь текст, который хочешь ответить, или опиши ситуацию своими словами.\n\nМожно прислать скриншот с подписью — бот учтёт контекст.',
+  2: '🎛 <b>Шаг 2 — Пресеты ответов</b>\n\nПресет — это набор параметров (тон, стиль, аудитория), который ты настраиваешь один раз.\n\nНа тарифе «Максимальный» доступны 4 пресета:\n💰 Продажи · 👔 Боссу · ❤️ Личное · ⭐ Мой пресет',
+  3: '💳 <b>Шаг 3 — Тарифы</b>\n\n• <b>Бесплатный</b> — 100 ответов в день, параметры задаёшь вручную каждый раз.\n• <b>Оптимальный</b> — безлимит + сохранённый стандартный профиль.\n• <b>Максимальный</b> — безлимит + 4 пресета + расширенные параметры.',
+  4: '🤝 <b>Шаг 4 — Партнёрская программа</b>\n\nПриглашай друзей по реферальной ссылке — получай бонусы за каждого оплатившего подписку.\n\nПерейди в «🤝 Партнёрка» → «🔗 Моя ссылка».',
+  5: '❓ <b>Шаг 5 — Помощь</b>\n\nЕсли что-то пошло не так или есть вопросы — напиши нам напрямую. Мы отвечаем быстро.\n\nНажми кнопку «🤝 Связаться» ниже.',
+};
+
+async function pruneOldBotMessages(ctx: BotContext) {
+  const KEEP = 3;
+  const { flowMsgId, resultMsgId } = ctx.session.ui;
+  // Only prune messages that are not the active flow or result message
+  const prunable = ctx.session.ui.botMsgIds.filter(
+    (id) => id !== flowMsgId && id !== resultMsgId
+  );
+  while (prunable.length > KEEP) {
+    const old = prunable.shift()!;
+    ctx.session.ui.botMsgIds = ctx.session.ui.botMsgIds.filter((id) => id !== old);
+    await safeDelete(ctx, old);
+  }
+}
+
 function trackBotMessage(ctx: BotContext, messageId: number) {
-  if (!ctx.session.ui.botMsgIds.includes(messageId)) ctx.session.ui.botMsgIds.push(messageId);
+  if (!ctx.session.ui.botMsgIds.includes(messageId)) {
+    ctx.session.ui.botMsgIds.push(messageId);
+    pruneOldBotMessages(ctx).catch(() => {});
+  }
 }
 
 function getUiPage(ctx: BotContext, key: string): number {
@@ -226,6 +256,40 @@ async function sendOrEditResultHTML(ctx: BotContext, html: string, keyboard: any
 const DEFAULT_GREET: ReplyProfile['greet'] = 'reply';
 const DEFAULT_GOAL: ReplyProfile['goal'] = 'clarify';
 const DEFAULT_HUMANITY: ReplyProfile['humanity'] = ['strict'];
+
+// -------------------- preset defaults --------------------
+const PRESET_SALES: ReplyProfile = {
+  greet: 'reply', audience: 'service', formality: 'vous', length: 'normal',
+  goal: 'sell', tone: ['friendly', 'confident'], humanity: ['positive_end', 'choice'],
+};
+const PRESET_BOSS: ReplyProfile = {
+  greet: 'reply', audience: 'boss', formality: 'vous', length: 'short',
+  goal: 'ask', tone: ['polite_soft', 'calm'], humanity: ['tact', 'transparent'],
+};
+const PRESET_PERSONAL: ReplyProfile = {
+  greet: 'reply', audience: 'personal', formality: 'tu', length: 'normal',
+  goal: 'support', tone: ['friendly', 'supportive'], humanity: ['empathy', 'care'],
+};
+
+const PRESET_LABELS: Record<string, string> = {
+  sales: '💰 Продажи',
+  boss: '👔 Боссу',
+  personal: '❤️ Личное',
+  my: '⭐ Мой пресет',
+};
+
+function initPresets(ctx: BotContext) {
+  if (ctx.session.presets) return;
+  const myBase = isCompleteProfile(ctx.session.defaults)
+    ? { ...ctx.session.defaults } as ReplyProfile
+    : { ...PRESET_PERSONAL };
+  ctx.session.presets = {
+    sales: { ...PRESET_SALES },
+    boss: { ...PRESET_BOSS },
+    personal: { ...PRESET_PERSONAL },
+    my: myBase,
+  };
+}
 
 function normalizeProfile(p: Partial<ReplyProfile>): ReplyProfile {
   return {
@@ -746,6 +810,13 @@ bot.start(async (ctx) => {
   ctx.session.draft = {};
   ctx.session.variant = 0;
 
+  const name = ctx.from?.first_name ?? 'друг';
+  const welcomeSent = await ctx.reply(
+    `👋 Привет, ${name}! Я помогу написать нужный ответ на любое сообщение.\n\nНажми «📝 Описать ситуацию» в меню или узнай, как пользоваться ботом:`,
+    { reply_markup: { inline_keyboard: [[{ text: '📖 Инструкция', callback_data: 'help:instruction' }]] } }
+  );
+  trackBotMessage(ctx, welcomeSent.message_id);
+
   return sendMainMenu(ctx);
 });
 
@@ -774,30 +845,26 @@ bot.hears(BTN_START, async (ctx) => {
   await cleanupUi(ctx);
   ctx.session.draft = {};
   ctx.session.variant = 0;
-  setMode(ctx, 'start_menu');
+  setMode(ctx, 'wait_situation');
 
-  return sendOrEditFlow(ctx, 'Начать ✅\n\nВыбери действие:', startInlineMenu());
+  return sendOrEditFlow(
+    ctx,
+    '📝 Описать ситуацию\n\nПришли текст ситуации, перешли чужое сообщение или отправь скриншот с подписью.',
+    { reply_markup: { inline_keyboard: [[{ text: '🏠 В меню', callback_data: 'nav:home' }]] } }
+  );
 });
 
 bot.hears(BTN_SETTINGS, async (ctx) => {
   await cleanupUi(ctx);
-  ctx.session.draft = {};
-  ctx.session.stdReturnTo = 'menu';
-
-  ctx.session.defaults.greet = DEFAULT_GREET;
-  ctx.session.defaults.goal = DEFAULT_GOAL;
-  ctx.session.defaults.humanity = DEFAULT_HUMANITY;
-  ctx.session.defaults.ban ??= [];
-
-  setMode(ctx, 'std_audience');
-  return sendOrEditFlow(ctx, 'Настройки ответа: 1) Для кого?', pickAudienceInline('std'));
+  initPresets(ctx);
+  setMode(ctx, 'preset_settings');
+  return sendOrEditFlow(ctx, '🎛 Задать пресет ответов\n\nВыбери пресет для настройки:', presetListInline());
 });
 
 bot.hears(BTN_SUPPORT, async (ctx) => {
   await cleanupUi(ctx);
   setMode(ctx, 'support');
-  const sent = await ctx.reply('🆘 Поддержка: напиши сюда → @your_support (заглушка)', mainMenu());
-  trackBotMessage(ctx, sent.message_id);
+  return sendOrEditFlow(ctx, '❓ Помощь\n\nВыбери, что тебя интересует:', helpMenuInline());
 });
 
 
@@ -882,6 +949,17 @@ function tariffChooseKeyboard(plan: PlanKey = 'trial') {
       },
     };
   }
+  if (plan === 'optimal') {
+    return {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: 'Максимальный', callback_data: 'tar:plan:maximum' }],
+          [{ text: '🏠 В меню', callback_data: 'nav:home' }],
+        ],
+      },
+    };
+  }
+  // trial / expired
   return {
     reply_markup: {
       inline_keyboard: [
@@ -970,7 +1048,7 @@ bot.hears(BTN_TARIFF, async (ctx) => {
 bot.hears(BTN_PARTNER, async (ctx) => {
   await cleanupUi(ctx);
   setMode(ctx, 'partner');
-  return sendOrEditFlow(ctx, '🤝 Партнерская программа:', partnerInline());
+  return sendOrEditFlow(ctx, '🤝 Партнёрка:', partnerInline());
 });
 
 // -------------------- inline: nav home --------------------
@@ -1060,7 +1138,7 @@ bot.action('par:link', async (ctx) => {
   const deepLink = BOT_USERNAME ? `https://t.me/${BOT_USERNAME}?start=${refCode}` : '';
 
   const text = BOT_USERNAME
-    ? `🔗 Твоя реферальная ссылка:\n${deepLink}\n\nМожно также отправить командой:\n/start ${refCode}`
+    ? `🔗 Твоя реферальная ссылка:\n${deepLink}`
     : `🔗 Твоя реферальная ссылка:\n/start ${refCode}\n\n(Чтобы была кликабельная t.me ссылка — добавь BOT_USERNAME в env или дождись getMe в проде.)`;
 
   return sendOrEditFlow(ctx, text, {
@@ -1169,28 +1247,41 @@ bot.action(/^pay:connect:(optimal|maximum)$/, async (ctx) => {
 
   if (!tgId) return;
 
+  // Refresh plan from Airtable before showing payment screen
+  try {
+    const u = await ensureUser({
+      tgId,
+      username: ctx.from?.username,
+      firstName: ctx.from?.first_name,
+    });
+    ctx.session.plan = u.plan;
+    ctx.session.trial.startedAt = u.trialStartedAt ?? undefined;
+    ctx.session.trial.expiresAt = u.trialExpiresAt ?? undefined;
+  } catch (e) {
+    console.error('PAY_ENSURE_USER_ERROR', e);
+  }
+
   const link = buildPaymentLink(plan, tgId);
 
   if (!link) {
-    const sent = await ctx.reply(
-      'Не настроен PAYMENT_URL_BASE / PUBLIC_URL для ссылки оплаты. Добавь PUBLIC_URL (Railway domain).',
-      mainMenu()
-    );
-    trackBotMessage(ctx, sent.message_id);
-    return;
+    return sendOrEditFlow(ctx, 'Не настроен PAYMENT_URL_BASE / PUBLIC_URL для ссылки оплаты. Добавь PUBLIC_URL (Railway domain).', {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '⬅️ Назад', callback_data: 'tar:back' }],
+          [{ text: '🏠 В меню', callback_data: 'nav:home' }],
+        ],
+      },
+    });
   }
 
-  // Сейчас это “перевод” на платежку через наш будущий endpoint.
-  // На шаге ЮKassa этот endpoint будет создавать payment и отдавать реальную ссылку/redirect.
-  const sent = await ctx.reply(
-    `Перехожу к оплате тарифа “${plan === 'optimal' ? 'Оптимальный' : 'Максимальный'}”`,
-    {
-      reply_markup: {
-        inline_keyboard: [[{ text: 'Оплатить', url: link }]],
-      },
-    }
-  );
-  trackBotMessage(ctx, sent.message_id);
+  return sendOrEditFlow(ctx, `${tariffPlanText(plan)}\n\nНажми кнопку ниже для перехода к оплате:`, {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: plan === 'optimal' ? 'Оплатить 299₽' : 'Оплатить 499₽', url: link }],
+        [{ text: '⬅️ Назад', callback_data: 'tar:back' }],
+      ],
+    },
+  });
 });
 
 
@@ -1230,11 +1321,19 @@ bot.on('photo', async (ctx) => {
 
   ctx.session.draft.situation = caption;
   ctx.session.variant = 0;
-  setMode(ctx, 'after_situation');
 
-  const sent = await ctx.reply('Ситуацию получил ✅\n\nВыбери, как подготовить ответ:', afterSituationInline());
-  trackBotMessage(ctx, sent.message_id);
-  ctx.session.ui.flowMsgId = sent.message_id;
+  if (ctx.session.plan === 'maximum') {
+    initPresets(ctx);
+    setMode(ctx, 'preset_pick');
+    const sent = await ctx.reply('Ситуацию получил ✅\n\nВыбери пресет:', maxPresetListInline());
+    trackBotMessage(ctx, sent.message_id);
+    ctx.session.ui.flowMsgId = sent.message_id;
+  } else {
+    setMode(ctx, 'after_situation');
+    const sent = await ctx.reply('Ситуацию получил ✅\n\nВыбери, как подготовить ответ:', afterSituationInline());
+    trackBotMessage(ctx, sent.message_id);
+    ctx.session.ui.flowMsgId = sent.message_id;
+  }
 });
 
 // -------------------- incoming: text --------------------
@@ -1259,11 +1358,77 @@ bot.on('text', async (ctx) => {
 
   ctx.session.draft.situation = situation;
   ctx.session.variant = 0;
-  setMode(ctx, 'after_situation');
 
-  const sent = await ctx.reply('Ситуацию получил ✅\n\nВыбери, как подготовить ответ:', afterSituationInline());
-  trackBotMessage(ctx, sent.message_id);
-  ctx.session.ui.flowMsgId = sent.message_id;
+  if (ctx.session.plan === 'maximum') {
+    initPresets(ctx);
+    setMode(ctx, 'preset_pick');
+    const sent = await ctx.reply('Ситуацию получил ✅\n\nВыбери пресет:', maxPresetListInline());
+    trackBotMessage(ctx, sent.message_id);
+    ctx.session.ui.flowMsgId = sent.message_id;
+  } else {
+    setMode(ctx, 'after_situation');
+    const sent = await ctx.reply('Ситуацию получил ✅\n\nВыбери, как подготовить ответ:', afterSituationInline());
+    trackBotMessage(ctx, sent.message_id);
+    ctx.session.ui.flowMsgId = sent.message_id;
+  }
+});
+
+// -------------------- preset actions --------------------
+
+// Выбор пресета для генерации (maximum plan, после ситуации)
+bot.action(/^preset:pick:(sales|boss|personal|my)$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const key = (ctx.match as any)[1] as 'sales' | 'boss' | 'personal' | 'my';
+
+  initPresets(ctx);
+  const preset = ctx.session.presets![key];
+  ctx.session.draft.useStandard = false;
+  ctx.session.draft.profile = { ...preset };
+
+  return showResult(ctx, preset);
+});
+
+// Список пресетов (экран "Задать пресет ответов")
+bot.action('preset:list', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  return sendOrEditFlow(ctx, '🎛 Задать пресет ответов\n\nВыбери пресет для настройки:', presetListInline());
+});
+
+// Выбор пресета для просмотра/редактирования
+bot.action(/^preset:select:(sales|boss|personal|my)$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const key = (ctx.match as any)[1] as 'sales' | 'boss' | 'personal' | 'my';
+
+  ctx.session.presetSelected = key;
+  initPresets(ctx);
+  const preset = ctx.session.presets![key];
+  const text = `🎛 Пресет «${PRESET_LABELS[key]}»\n\n${profileLabel(preset)}`;
+  return sendOrEditFlow(ctx, text, presetDetailInline(key));
+});
+
+// Установить пресет как стандарт ("По умолчанию")
+bot.action(/^preset:default:(sales|boss|personal|my)$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const key = (ctx.match as any)[1] as 'sales' | 'boss' | 'personal' | 'my';
+
+  initPresets(ctx);
+  ctx.session.defaults = { ...ctx.session.presets![key] };
+  return sendOrEditFlow(ctx, `✅ Пресет «${PRESET_LABELS[key]}» применён как стандарт.\n\n🎛 Задать пресет ответов\n\nВыбери пресет для настройки:`, presetListInline());
+});
+
+// Редактировать пресет — запустить wizard
+bot.action(/^preset:edit:(sales|boss|personal|my)$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const key = (ctx.match as any)[1] as 'sales' | 'boss' | 'personal' | 'my';
+
+  ctx.session.presetSelected = key;
+  ctx.session.stdReturnTo = 'preset_detail';
+  initPresets(ctx);
+  // Копируем пресет в defaults, чтобы wizard редактировал его
+  ctx.session.defaults = { ...ctx.session.presets![key] };
+
+  setMode(ctx, 'std_audience');
+  return sendOrEditFlow(ctx, `✏️ Редактирование пресета «${PRESET_LABELS[key]}»\n\n1) Для кого?`, pickAudienceInline('std'));
 });
 
 // -------------------- after situation actions --------------------
@@ -1481,9 +1646,20 @@ bot.action(/^std:tone:done$/, async (ctx) => {
     return sendOrEditFlow(ctx, 'Похоже, стандарт не полностью задан. 1) Для кого?', pickAudienceInline('std'));
   }
 
+  // Если редактировали пресет — сохраняем и возвращаемся на экран пресета
+  if (ctx.session.stdReturnTo === 'preset_detail') {
+    const key = ctx.session.presetSelected ?? 'my';
+    initPresets(ctx);
+    ctx.session.presets![key] = normalizeProfile(ctx.session.defaults);
+    ctx.session.stdReturnTo = 'menu';
+    const preset = ctx.session.presets![key];
+    const text = `✅ Пресет обновлён.\n\n🎛 Пресет «${PRESET_LABELS[key]}»\n\n${profileLabel(preset)}`;
+    return sendOrEditFlow(ctx, text, presetDetailInline(key));
+  }
+
   if (ctx.session.stdReturnTo === 'menu') {
     setMode(ctx, 'menu');
-    await sendOrEditFlow(ctx, '✅ Стандарт сохранён. Нажми “🚀 Начать” → “📝 Описать ситуацию”.', {
+    await sendOrEditFlow(ctx, '✅ Стандарт сохранён. Нажми “📝 Описать ситуацию”.', {
       reply_markup: { inline_keyboard: [[{ text: '🏠 В меню', callback_data: 'nav:home' }]] },
     });
     const sent = await ctx.reply('Готово.', mainMenu());
@@ -1746,6 +1922,19 @@ bot.action('res:edit', async (ctx) => {
   setMode(ctx, 'custom_audience');
 return sendOrEditFlow(ctx, '1) Для кого?', pickAudienceInline('cus'));
 
+});
+
+// -------------------- help / instruction --------------------
+bot.action('help:instruction', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  return sendOrEditFlow(ctx, INSTRUCTION_SCREENS[1], instructionNavInline(1));
+});
+
+bot.action(/^help:step:(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const step = Number(ctx.match[1]);
+  if (step < 1 || step > 5) return;
+  return sendOrEditFlow(ctx, INSTRUCTION_SCREENS[step], instructionNavInline(step));
 });
 
 // -------------------- launch --------------------
