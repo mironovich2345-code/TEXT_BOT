@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import type { ReplyProfile } from "../bot.types";
+import { calcTextCostUsd, calcTranscribeCostUsd } from "../metrics/cost";
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -145,12 +146,17 @@ function profileToLines(p: ReplyProfile) {
   ].join("\n");
 }
 
-export async function transcribeVoice(buffer: Buffer): Promise<string> {
+export async function transcribeVoice(
+  buffer: Buffer,
+  durationSec: number
+): Promise<{ text: string; model: string; audio_seconds: number; cost_usd: number }> {
   const model = process.env.OPENAI_TRANSCRIBE_MODEL ?? 'gpt-4o-mini-transcribe';
   const file = new File([new Uint8Array(buffer)], 'voice.ogg', { type: 'audio/ogg' });
   try {
     const resp = await client.audio.transcriptions.create({ file, model } as any);
-    return (resp.text ?? '').trim();
+    const text = (resp.text ?? '').trim();
+    const cost_usd = calcTranscribeCostUsd(model, durationSec);
+    return { text, model, audio_seconds: durationSec, cost_usd };
   } catch (e: any) {
     const status = e?.status ?? e?.response?.status;
     if (status === 403 && String(e?.message ?? '').includes('Country, region, or territory not supported')) {
@@ -160,7 +166,10 @@ export async function transcribeVoice(buffer: Buffer): Promise<string> {
   }
 }
 
-export async function extractSituationFromImage(buffer: Buffer, caption?: string): Promise<string> {
+export async function extractSituationFromImage(
+  buffer: Buffer,
+  caption?: string
+): Promise<{ situation: string; model: string; prompt_tokens: number; completion_tokens: number; cost_usd: number }> {
   const model = process.env.OPENAI_VISION_MODEL ?? 'gpt-4o-mini';
   const base64 = buffer.toString('base64');
   const captionNote = caption ? `\nДополнительный контекст от пользователя: "${caption}"` : '';
@@ -186,16 +195,21 @@ export async function extractSituationFromImage(buffer: Buffer, caption?: string
       temperature: 0.3,
     });
     const raw = (resp.choices[0]?.message?.content ?? '').trim();
+    const prompt_tokens = resp.usage?.prompt_tokens ?? 0;
+    const completion_tokens = resp.usage?.completion_tokens ?? 0;
+    const cost_usd = calcTextCostUsd(model, prompt_tokens, completion_tokens);
+
+    let situation = raw;
     const jsonMatch = raw.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       try {
         const parsed = JSON.parse(jsonMatch[0]);
-        return (parsed.situation ?? parsed.extracted_text ?? '').trim();
+        situation = (parsed.situation ?? parsed.extracted_text ?? '').trim();
       } catch {
-        return raw;
+        situation = raw;
       }
     }
-    return raw;
+    return { situation, model, prompt_tokens, completion_tokens, cost_usd };
   } catch (e: any) {
     const status = e?.status ?? e?.response?.status;
     if (status === 403 && String(e?.message ?? '').includes('Country, region, or territory not supported')) {
@@ -209,7 +223,7 @@ export async function generateReplyAI(args: {
   situation: string;
   profile: ReplyProfile;
   variant: number;
-}): Promise<{ text: string; usage?: any }> {
+}): Promise<{ text: string; model: string; prompt_tokens: number; completion_tokens: number; cost_usd: number }> {
   const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
   const instructions =
@@ -238,7 +252,11 @@ export async function generateReplyAI(args: {
     });
 
     const text = ((resp as any).output_text ?? "").trim();
-    return { text, usage: (resp as any).usage };
+    const usage = (resp as any).usage;
+    const prompt_tokens = usage?.input_tokens ?? 0;
+    const completion_tokens = usage?.output_tokens ?? 0;
+    const cost_usd = calcTextCostUsd(model, prompt_tokens, completion_tokens);
+    return { text, model, prompt_tokens, completion_tokens, cost_usd };
   } catch (e: any) {
     const status = e?.status ?? e?.response?.status;
     const msg = String(e?.message ?? "");

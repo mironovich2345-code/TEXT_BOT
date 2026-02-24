@@ -173,10 +173,15 @@ export async function updateTrialRemaining(tgId: number, remaining: number) {
 export async function logRequest(args: {
   tgId: number;
   createdAt: Date;
+  event?: 'generate' | 'transcribe' | 'vision_extract';
+  input_kind?: 'text' | 'voice' | 'photo';
   model?: string;
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
+  audio_seconds?: number;
+  cost_usd?: number;
+  message_id?: number;
   variant: number;
   situationLen: number;
 }) {
@@ -186,10 +191,15 @@ export async function logRequest(args: {
     const table = base(REQS_TABLE);
     await table.create({
       tg_id: args.tgId,
+      event: args.event ?? 'generate',
+      input_kind: args.input_kind ?? 'text',
       model: args.model ?? '',
       input_tokens: args.inputTokens ?? 0,
       output_tokens: args.outputTokens ?? 0,
       total_tokens: args.totalTokens ?? 0,
+      audio_seconds: args.audio_seconds ?? 0,
+      cost_usd: args.cost_usd ?? 0,
+      ...(args.message_id != null ? { message_id: args.message_id } : {}),
       variant: args.variant,
       situation_len: args.situationLen,
       created_at: args.createdAt.toISOString(),
@@ -201,6 +211,25 @@ export async function logRequest(args: {
       status: e?.status ?? e?.response?.status,
       details: e,
     });
+  }
+}
+
+export async function addUserSpend(tgId: number, deltaUsd: number, deltaReq = 1) {
+  if (!base) return;
+  try {
+    const recordId = await findUserRecordIdByTgId(tgId);
+    if (!recordId) return;
+    const table = base(USERS_TABLE);
+    const rec = await table.find(recordId);
+    const currentUsd = num((rec.fields as any)?.spent_usd_total ?? 0);
+    const currentReqs = num((rec.fields as any)?.spent_requests_total ?? 0);
+    await table.update(recordId, {
+      spent_usd_total: currentUsd + deltaUsd,
+      spent_requests_total: currentReqs + deltaReq,
+      spent_updated_at: new Date().toISOString(),
+    });
+  } catch (e: any) {
+    console.error('ADD_USER_SPEND_ERROR', e?.message);
   }
 }
 

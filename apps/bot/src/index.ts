@@ -4,7 +4,7 @@ import 'dotenv/config';
 import { Telegraf, session } from 'telegraf';
 import { ensureUser, setReferrerOnce, getPartnerStats } from './db/airtable';
 import { updateTrialRemaining } from './db/airtable';
-import { logRequest } from './db/airtable';
+import { logRequest, addUserSpend } from './db/airtable';
 import http from 'node:http';
 
 import type { BotContext, BotSession, Mode, ReplyProfile } from './bot.types';
@@ -704,10 +704,13 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
         await logRequest({
           tgId,
           createdAt: new Date(),
+          event: 'generate',
+          input_kind: 'text',
           model: 'stub',
           inputTokens: 0,
           outputTokens: 0,
           totalTokens: 0,
+          cost_usd: 0,
           variant: ctx.session.variant,
           situationLen: situation.length,
         }).catch(() => {});
@@ -729,13 +732,13 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
     }
 
     // 3) OpenAI — нормальный путь
-    const { text, usage } = await generateReplyAI({
+    const genResult = await generateReplyAI({
       situation,
       profile: full,
       variant: ctx.session.variant,
     });
 
-    const finalText = text || 'Не смог сгенерировать ответ. Нажми “Подумай ещё”.';
+    const finalText = genResult.text || 'Не смог сгенерировать ответ. Нажми “Подумай ещё”.';
 
     setUiVal(ctx, 'lastResultText', finalText);
     setUiVal(ctx, 'lastResultProfile', full);
@@ -747,13 +750,17 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
       await logRequest({
         tgId,
         createdAt: new Date(),
-        model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
-        inputTokens: usage?.input_tokens ?? 0,
-        outputTokens: usage?.output_tokens ?? 0,
-        totalTokens: usage?.total_tokens ?? 0,
+        event: 'generate',
+        input_kind: 'text',
+        model: genResult.model,
+        inputTokens: genResult.prompt_tokens,
+        outputTokens: genResult.completion_tokens,
+        totalTokens: genResult.prompt_tokens + genResult.completion_tokens,
+        cost_usd: genResult.cost_usd,
         variant: ctx.session.variant,
         situationLen: situation.length,
       }).catch(() => {});
+      addUserSpend(tgId, genResult.cost_usd).catch(() => {});
     }
 
     return;
@@ -776,10 +783,13 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
         await logRequest({
           tgId,
           createdAt: new Date(),
+          event: 'generate',
+          input_kind: 'text',
           model: 'region_blocked_stub',
           inputTokens: 0,
           outputTokens: 0,
           totalTokens: 0,
+          cost_usd: 0,
           variant: ctx.session.variant,
           situationLen: situation.length,
         }).catch(() => {});
@@ -1389,17 +1399,35 @@ bot.on('voice', async (ctx) => {
   const voiceStatusId = await showStatusOrEdit(ctx, '🎙️ Распознаю голосовое…', voiceFastEditId);
   ctx.session.ui.flowMsgId = voiceStatusId;
 
+  const durationSec = (msg?.voice?.duration as number) ?? 0;
+
   try {
     const buffer = await downloadTelegramFile(ctx, fileId);
-    const text = await transcribeVoice(buffer);
+    const voiceResult = await transcribeVoice(buffer, durationSec);
 
-    if (!text) {
+    if (!voiceResult.text) {
       await ctx.telegram.editMessageText(ctx.chat!.id, voiceStatusId, undefined,
         '❌ Не удалось распознать голосовое. Отправь ситуацию текстом.').catch(() => {});
       return;
     }
 
-    return handleSituationReady(ctx, text, voiceStatusId);
+    const tgIdVoice = ctx.from?.id;
+    if (tgIdVoice) {
+      logRequest({
+        tgId: tgIdVoice,
+        createdAt: new Date(),
+        event: 'transcribe',
+        input_kind: 'voice',
+        model: voiceResult.model,
+        audio_seconds: voiceResult.audio_seconds,
+        cost_usd: voiceResult.cost_usd,
+        variant: ctx.session.variant,
+        situationLen: voiceResult.text.length,
+      }).catch(() => {});
+      addUserSpend(tgIdVoice, voiceResult.cost_usd).catch(() => {});
+    }
+
+    return handleSituationReady(ctx, voiceResult.text, voiceStatusId);
   } catch (e) {
     if (e instanceof OpenAIRegionBlockedError) OPENAI_DISABLED_RUNTIME = true;
     console.error('VOICE_TRANSCRIBE_ERROR', e);
@@ -1452,15 +1480,33 @@ bot.on('photo', async (ctx) => {
 
   try {
     const buffer = await downloadTelegramFile(ctx, fileId);
-    const situation = await extractSituationFromImage(buffer, caption || undefined);
+    const ocrResult = await extractSituationFromImage(buffer, caption || undefined);
 
-    if (!situation) {
+    if (!ocrResult.situation) {
       await ctx.telegram.editMessageText(ctx.chat!.id, photoStatusId, undefined,
         '❌ Не удалось прочитать скриншот. Перешли текст или опиши ситуацию текстом.').catch(() => {});
       return;
     }
 
-    return handleSituationReady(ctx, situation, photoStatusId);
+    const tgIdPhoto = ctx.from?.id;
+    if (tgIdPhoto) {
+      logRequest({
+        tgId: tgIdPhoto,
+        createdAt: new Date(),
+        event: 'vision_extract',
+        input_kind: 'photo',
+        model: ocrResult.model,
+        inputTokens: ocrResult.prompt_tokens,
+        outputTokens: ocrResult.completion_tokens,
+        totalTokens: ocrResult.prompt_tokens + ocrResult.completion_tokens,
+        cost_usd: ocrResult.cost_usd,
+        variant: ctx.session.variant,
+        situationLen: ocrResult.situation.length,
+      }).catch(() => {});
+      addUserSpend(tgIdPhoto, ocrResult.cost_usd).catch(() => {});
+    }
+
+    return handleSituationReady(ctx, ocrResult.situation, photoStatusId);
   } catch (e) {
     if (e instanceof OpenAIRegionBlockedError) OPENAI_DISABLED_RUNTIME = true;
     console.error('PHOTO_OCR_ERROR', e);
