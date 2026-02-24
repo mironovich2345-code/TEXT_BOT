@@ -1325,13 +1325,38 @@ bot.action(/^pay:connect:(optimal|maximum)$/, async (ctx) => {
 
 
 
+// -------------------- fast-path helpers --------------------
+
+// Modes where an unsolicited message is accepted as a new situation
+const FAST_PATH_MODES = new Set(['menu', 'result', 'after_situation', 'preset_pick']);
+
+function getEditableMsgIdForNextInput(ctx: BotContext): number | undefined {
+  return ctx.session.ui.resultMsgId ?? ctx.session.ui.flowMsgId;
+}
+
+// Show status text: edit existing message if possible, else send new
+async function showStatusOrEdit(ctx: BotContext, text: string, editMsgId?: number): Promise<number> {
+  if (editMsgId && ctx.chat) {
+    try {
+      await ctx.telegram.editMessageText(ctx.chat.id, editMsgId, undefined, text);
+      return editMsgId;
+    } catch {
+      // fall through to reply
+    }
+  }
+  const sent = await ctx.reply(text);
+  trackBotMessage(ctx, sent.message_id);
+  return sent.message_id;
+}
+
 // -------------------- incoming: voice --------------------
 bot.on('voice', async (ctx) => {
   const msg: any = ctx.message;
   const fileId = msg?.voice?.file_id as string | undefined;
   if (!fileId) return;
 
-  if (ctx.session.mode !== 'wait_situation') {
+  const voiceMode = ctx.session.mode;
+  if (voiceMode !== 'wait_situation' && !FAST_PATH_MODES.has(voiceMode)) {
     const sent = await ctx.reply('Нажми «📝 Описать ситуацию» в меню.', mainMenu());
     trackBotMessage(ctx, sent.message_id);
     return;
@@ -1352,25 +1377,33 @@ bot.on('voice', async (ctx) => {
     return;
   }
 
-  const statusMsg = await ctx.reply('🎙️ Распознаю голосовое…');
-  trackBotMessage(ctx, statusMsg.message_id);
-  ctx.session.ui.flowMsgId = statusMsg.message_id;
+  const voiceIsFastPath = voiceMode !== 'wait_situation';
+  const voiceFastEditId = voiceIsFastPath ? getEditableMsgIdForNextInput(ctx) : undefined;
+  if (voiceIsFastPath) {
+    ctx.session.draft = {};
+    if (voiceFastEditId && voiceFastEditId === ctx.session.ui.resultMsgId) {
+      ctx.session.ui.resultMsgId = undefined;
+    }
+  }
+
+  const voiceStatusId = await showStatusOrEdit(ctx, '🎙️ Распознаю голосовое…', voiceFastEditId);
+  ctx.session.ui.flowMsgId = voiceStatusId;
 
   try {
     const buffer = await downloadTelegramFile(ctx, fileId);
     const text = await transcribeVoice(buffer);
 
     if (!text) {
-      await ctx.telegram.editMessageText(ctx.chat!.id, statusMsg.message_id, undefined,
+      await ctx.telegram.editMessageText(ctx.chat!.id, voiceStatusId, undefined,
         '❌ Не удалось распознать голосовое. Отправь ситуацию текстом.').catch(() => {});
       return;
     }
 
-    return handleSituationReady(ctx, text, statusMsg.message_id);
+    return handleSituationReady(ctx, text, voiceStatusId);
   } catch (e) {
     if (e instanceof OpenAIRegionBlockedError) OPENAI_DISABLED_RUNTIME = true;
     console.error('VOICE_TRANSCRIBE_ERROR', e);
-    await ctx.telegram.editMessageText(ctx.chat!.id, statusMsg.message_id, undefined,
+    await ctx.telegram.editMessageText(ctx.chat!.id, voiceStatusId, undefined,
       '❌ Ошибка при распознавании. Попробуй отправить текстом.').catch(() => {});
   }
 });
@@ -1389,21 +1422,30 @@ bot.on('photo', async (ctx) => {
     return;
   }
 
-  if (ctx.session.mode !== 'wait_situation') {
+  const photoMode = ctx.session.mode;
+  if (photoMode !== 'wait_situation' && !FAST_PATH_MODES.has(photoMode)) {
     const sent = await ctx.reply('Нажми «📝 Описать ситуацию» в меню.', mainMenu());
     trackBotMessage(ctx, sent.message_id);
     return;
   }
 
-  const statusMsg = await ctx.reply('🖼️ Считываю текст со скриншота…');
-  trackBotMessage(ctx, statusMsg.message_id);
-  ctx.session.ui.flowMsgId = statusMsg.message_id;
+  const photoIsFastPath = photoMode !== 'wait_situation';
+  const photoFastEditId = photoIsFastPath ? getEditableMsgIdForNextInput(ctx) : undefined;
+  if (photoIsFastPath) {
+    ctx.session.draft = {};
+    if (photoFastEditId && photoFastEditId === ctx.session.ui.resultMsgId) {
+      ctx.session.ui.resultMsgId = undefined;
+    }
+  }
+
+  const photoStatusId = await showStatusOrEdit(ctx, '🖼️ Считываю текст со скриншота…', photoFastEditId);
+  ctx.session.ui.flowMsgId = photoStatusId;
 
   if (!process.env.OPENAI_API_KEY || OPENAI_DISABLED_RUNTIME) {
     if (caption) {
-      return handleSituationReady(ctx, caption, statusMsg.message_id);
+      return handleSituationReady(ctx, caption, photoStatusId);
     }
-    await ctx.telegram.editMessageText(ctx.chat!.id, statusMsg.message_id, undefined,
+    await ctx.telegram.editMessageText(ctx.chat!.id, photoStatusId, undefined,
       'Скрин получил ✅\n\nДобавь подпись к фото с описанием ситуации — тогда смогу помочь.').catch(() => {});
     return;
   }
@@ -1413,16 +1455,16 @@ bot.on('photo', async (ctx) => {
     const situation = await extractSituationFromImage(buffer, caption || undefined);
 
     if (!situation) {
-      await ctx.telegram.editMessageText(ctx.chat!.id, statusMsg.message_id, undefined,
+      await ctx.telegram.editMessageText(ctx.chat!.id, photoStatusId, undefined,
         '❌ Не удалось прочитать скриншот. Перешли текст или опиши ситуацию текстом.').catch(() => {});
       return;
     }
 
-    return handleSituationReady(ctx, situation, statusMsg.message_id);
+    return handleSituationReady(ctx, situation, photoStatusId);
   } catch (e) {
     if (e instanceof OpenAIRegionBlockedError) OPENAI_DISABLED_RUNTIME = true;
     console.error('PHOTO_OCR_ERROR', e);
-    await ctx.telegram.editMessageText(ctx.chat!.id, statusMsg.message_id, undefined,
+    await ctx.telegram.editMessageText(ctx.chat!.id, photoStatusId, undefined,
       '❌ Ошибка при распознавании. Перешли текст или опиши ситуацию текстом.').catch(() => {});
   }
 });
@@ -1434,8 +1476,9 @@ bot.on('text', async (ctx) => {
 
   if ([BTN_START, BTN_SETTINGS, BTN_SUPPORT, BTN_TARIFF, BTN_PARTNER, BTN_HOME, BTN_BACK].includes(text)) return;
 
-  if (ctx.session.mode !== 'wait_situation') {
-    const sent = await ctx.reply('Нажми “🚀 Начать” → “📝 Описать ситуацию”.', mainMenu());
+  const textMode = ctx.session.mode;
+  if (textMode !== 'wait_situation' && !FAST_PATH_MODES.has(textMode)) {
+    const sent = await ctx.reply('Нажми «📝 Описать ситуацию» в меню.', mainMenu());
     trackBotMessage(ctx, sent.message_id);
     return;
   }
@@ -1447,7 +1490,16 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  return handleSituationReady(ctx, situation);
+  const textIsFastPath = textMode !== 'wait_situation';
+  const textEditMsgId = textIsFastPath ? getEditableMsgIdForNextInput(ctx) : undefined;
+  if (textIsFastPath) {
+    ctx.session.draft = {};
+    if (textEditMsgId && textEditMsgId === ctx.session.ui.resultMsgId) {
+      ctx.session.ui.resultMsgId = undefined;
+    }
+  }
+
+  return handleSituationReady(ctx, situation, textEditMsgId);
 });
 
 // -------------------- preset actions --------------------
