@@ -198,7 +198,6 @@ export async function logRequest(args: {
     ...(args.cost_rub != null ? { cost_rub: args.cost_rub } : {}),
     variant: args.variant,
     situation_len: args.situationLen,
-    created_at: args.createdAt.toISOString(),
   };
 
   console.log('logRequest payload', payload);
@@ -221,24 +220,8 @@ export async function logRequest(args: {
   }
 }
 
-export async function addUserSpend(tgId: number, deltaUsd: number, deltaReq = 1) {
-  if (!base) return;
-  try {
-    const recordId = await findUserRecordIdByTgId(tgId);
-    if (!recordId) return;
-    const table = base(USERS_TABLE);
-    const rec = await table.find(recordId);
-    const currentUsd = num((rec.fields as any)?.spent_usd_total ?? 0);
-    const currentReqs = num((rec.fields as any)?.spent_requests_total ?? 0);
-    await table.update(recordId, {
-      spent_usd_total: currentUsd + deltaUsd,
-      spent_requests_total: currentReqs + deltaReq,
-      spent_updated_at: new Date().toISOString(),
-    });
-  } catch (e: any) {
-    console.error('ADD_USER_SPEND_ERROR', e?.message);
-  }
-}
+// addUserSpend is a no-op: spent totals are computed by Airtable rollup fields.
+export async function addUserSpend(_tgId: number, _deltaUsd: number, _deltaReq = 1) {}
 
 /**
  * Ставит реферера для пользователя ОДИН РАЗ (навсегда).
