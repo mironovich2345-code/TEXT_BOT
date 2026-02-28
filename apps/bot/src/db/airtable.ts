@@ -366,10 +366,10 @@ export interface AdminStats {
   totalUsers: number;
   optimalCount: number;
   maximumCount: number;
-  genTodayUsers: number;
+  genTodayCount: number;
   costTodayRub: number;
   costTodayTranscribeRub: number;
-  genLast3Users: number;
+  genLast3Count: number;
   costLast3Rub: number;
   costLast3TranscribeRub: number;
   costMonthRub: number;
@@ -405,7 +405,7 @@ export async function getAdminStats(): Promise<AdminStats | null> {
   const optimalCount = users.filter((r: any) => normalizePlan(r.fields?.plan) === 'optimal').length;
   const maximumCount = users.filter((r: any) => normalizePlan(r.fields?.plan) === 'maximum').length;
 
-  const genTodaySet = new Set<string>();
+  let genTodayCount = 0;
   let costTodayRub = 0;
   let costTodayTranscribeRub = 0;
   for (const r of todayReqs) {
@@ -413,10 +413,10 @@ export async function getAdminStats(): Promise<AdminStats | null> {
     const rub = num(f?.cost_rub);
     costTodayRub += rub;
     if (String(f?.event) === 'transcribe') costTodayTranscribeRub += rub;
-    if (String(f?.event) === 'generate') genTodaySet.add(String(f?.tg_id ?? ''));
+    if (String(f?.event) === 'generate') genTodayCount++;
   }
 
-  const genLast3Set = new Set<string>();
+  let genLast3Count = 0;
   let costLast3Rub = 0;
   let costLast3TranscribeRub = 0;
   for (const r of last3Reqs) {
@@ -424,7 +424,7 @@ export async function getAdminStats(): Promise<AdminStats | null> {
     const rub = num(f?.cost_rub);
     costLast3Rub += rub;
     if (String(f?.event) === 'transcribe') costLast3TranscribeRub += rub;
-    if (String(f?.event) === 'generate') genLast3Set.add(String(f?.tg_id ?? ''));
+    if (String(f?.event) === 'generate') genLast3Count++;
   }
 
   let costMonthRub = 0;
@@ -440,10 +440,10 @@ export async function getAdminStats(): Promise<AdminStats | null> {
     totalUsers,
     optimalCount,
     maximumCount,
-    genTodayUsers: genTodaySet.size,
+    genTodayCount,
     costTodayRub,
     costTodayTranscribeRub,
-    genLast3Users: genLast3Set.size,
+    genLast3Count,
     costLast3Rub,
     costLast3TranscribeRub,
     costMonthRub,
