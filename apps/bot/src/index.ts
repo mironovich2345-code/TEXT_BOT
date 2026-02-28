@@ -9,6 +9,7 @@ import http from 'node:http';
 
 import type { BotContext, BotSession, Mode, ReplyProfile } from './bot.types';
 import { generateReplyAI, OpenAIRegionBlockedError, transcribeVoice, extractSituationFromImage } from './ai/openai';
+import { calcCostRub } from './metrics/cost';
 
 import {
   mainMenu,
@@ -711,6 +712,7 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
           outputTokens: 0,
           totalTokens: 0,
           cost_usd: 0,
+          cost_rub: calcCostRub(0),
           variant: ctx.session.variant,
           situationLen: situation.length,
         }).catch(() => {});
@@ -757,6 +759,7 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
         outputTokens: genResult.completion_tokens,
         totalTokens: genResult.prompt_tokens + genResult.completion_tokens,
         cost_usd: genResult.cost_usd,
+        cost_rub: calcCostRub(genResult.cost_usd),
         variant: ctx.session.variant,
         situationLen: situation.length,
       }).catch(() => {});
@@ -790,6 +793,7 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
           outputTokens: 0,
           totalTokens: 0,
           cost_usd: 0,
+          cost_rub: calcCostRub(0),
           variant: ctx.session.variant,
           situationLen: situation.length,
         }).catch(() => {});
@@ -1421,6 +1425,7 @@ bot.on('voice', async (ctx) => {
         model: voiceResult.model,
         audio_seconds: voiceResult.audio_seconds,
         cost_usd: voiceResult.cost_usd,
+        cost_rub: calcCostRub(voiceResult.cost_usd),
         variant: ctx.session.variant,
         situationLen: voiceResult.text.length,
       }).catch(() => {});
@@ -1500,6 +1505,7 @@ bot.on('photo', async (ctx) => {
         outputTokens: ocrResult.completion_tokens,
         totalTokens: ocrResult.prompt_tokens + ocrResult.completion_tokens,
         cost_usd: ocrResult.cost_usd,
+        cost_rub: calcCostRub(ocrResult.cost_usd),
         variant: ctx.session.variant,
         situationLen: ocrResult.situation.length,
       }).catch(() => {});

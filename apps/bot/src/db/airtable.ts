@@ -181,6 +181,7 @@ export async function logRequest(args: {
   totalTokens?: number;
   audio_seconds?: number;
   cost_usd?: number;
+  cost_rub?: number;
   message_id?: number;
   variant: number;
   situationLen: number;
@@ -199,6 +200,7 @@ export async function logRequest(args: {
       total_tokens: args.totalTokens ?? 0,
       audio_seconds: args.audio_seconds ?? 0,
       cost_usd: args.cost_usd ?? 0,
+      ...(args.cost_rub != null ? { cost_rub: args.cost_rub } : {}),
       ...(args.message_id != null ? { message_id: args.message_id } : {}),
       variant: args.variant,
       situation_len: args.situationLen,

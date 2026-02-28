@@ -23,3 +23,9 @@ export function calcTranscribeCostUsd(model: string, seconds: number): number {
   const pricePerMin = TRANSCRIBE_PRICE_PER_MIN[model] ?? TRANSCRIBE_PRICE_PER_MIN['gpt-4o-mini-transcribe'];
   return (seconds / 60) * pricePerMin;
 }
+
+export function calcCostRub(costUsd: number): number | undefined {
+  const rate = Number(process.env.USD_RUB_RATE);
+  if (!Number.isFinite(rate) || rate <= 0) return undefined;
+  return costUsd * rate;
+}
