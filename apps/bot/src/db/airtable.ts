@@ -188,8 +188,15 @@ export async function logRequest(args: {
 }) {
   if (!base) return;
 
+  const ts = args.createdAt;
+  const logged_day = ts.toISOString().slice(0, 10); // YYYY-MM-DD
+  const logged_month = ts.toISOString().slice(0, 7); // YYYY-MM
+
   const payload = {
     tg_id: args.tgId,
+    event: args.event ?? 'generate',
+    logged_day,
+    logged_month,
     model: args.model ?? '',
     input_tokens: args.inputTokens ?? 0,
     output_tokens: args.outputTokens ?? 0,
@@ -353,4 +360,93 @@ export async function getPartnerStats(referrerTgId: number): Promise<{
   }
 
   return { invited, invitedActive, accrued, reservedToPayout, available, myAnswers };
+}
+
+export interface AdminStats {
+  totalUsers: number;
+  optimalCount: number;
+  maximumCount: number;
+  genTodayUsers: number;
+  costTodayRub: number;
+  costTodayTranscribeRub: number;
+  genLast3Users: number;
+  costLast3Rub: number;
+  costLast3TranscribeRub: number;
+  costMonthRub: number;
+  costMonthTranscribeRub: number;
+}
+
+export async function getAdminStats(): Promise<AdminStats | null> {
+  if (!base) return null;
+
+  const now = new Date();
+  const todayStr = now.toISOString().slice(0, 10); // YYYY-MM-DD
+  const monthStr = now.toISOString().slice(0, 7);  // YYYY-MM
+  const d3 = new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000);
+  const d3Str = d3.toISOString().slice(0, 10);
+
+  const [users, todayReqs, last3Reqs, monthReqs] = await Promise.all([
+    selectAll(USERS_TABLE, { fields: ['plan'] }).catch(() => [] as any[]),
+    selectAll(REQS_TABLE, {
+      filterByFormula: `IS_SAME({logged_day}, '${todayStr}', 'day')`,
+      fields: ['tg_id', 'event', 'cost_rub'],
+    }).catch(() => [] as any[]),
+    selectAll(REQS_TABLE, {
+      filterByFormula: `NOT(IS_BEFORE({logged_day}, '${d3Str}'))`,
+      fields: ['tg_id', 'event', 'cost_rub'],
+    }).catch(() => [] as any[]),
+    selectAll(REQS_TABLE, {
+      filterByFormula: `{logged_month}='${monthStr}'`,
+      fields: ['event', 'cost_rub'],
+    }).catch(() => [] as any[]),
+  ]);
+
+  const totalUsers = users.length;
+  const optimalCount = users.filter((r: any) => normalizePlan(r.fields?.plan) === 'optimal').length;
+  const maximumCount = users.filter((r: any) => normalizePlan(r.fields?.plan) === 'maximum').length;
+
+  const genTodaySet = new Set<string>();
+  let costTodayRub = 0;
+  let costTodayTranscribeRub = 0;
+  for (const r of todayReqs) {
+    const f = r.fields as any;
+    const rub = num(f?.cost_rub);
+    costTodayRub += rub;
+    if (String(f?.event) === 'transcribe') costTodayTranscribeRub += rub;
+    if (String(f?.event) === 'generate') genTodaySet.add(String(f?.tg_id ?? ''));
+  }
+
+  const genLast3Set = new Set<string>();
+  let costLast3Rub = 0;
+  let costLast3TranscribeRub = 0;
+  for (const r of last3Reqs) {
+    const f = r.fields as any;
+    const rub = num(f?.cost_rub);
+    costLast3Rub += rub;
+    if (String(f?.event) === 'transcribe') costLast3TranscribeRub += rub;
+    if (String(f?.event) === 'generate') genLast3Set.add(String(f?.tg_id ?? ''));
+  }
+
+  let costMonthRub = 0;
+  let costMonthTranscribeRub = 0;
+  for (const r of monthReqs) {
+    const f = r.fields as any;
+    const rub = num(f?.cost_rub);
+    costMonthRub += rub;
+    if (String(f?.event) === 'transcribe') costMonthTranscribeRub += rub;
+  }
+
+  return {
+    totalUsers,
+    optimalCount,
+    maximumCount,
+    genTodayUsers: genTodaySet.size,
+    costTodayRub,
+    costTodayTranscribeRub,
+    genLast3Users: genLast3Set.size,
+    costLast3Rub,
+    costLast3TranscribeRub,
+    costMonthRub,
+    costMonthTranscribeRub,
+  };
 }

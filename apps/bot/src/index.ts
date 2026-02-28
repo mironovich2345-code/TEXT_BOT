@@ -4,7 +4,8 @@ import 'dotenv/config';
 import { Telegraf, session } from 'telegraf';
 import { ensureUser, setReferrerOnce, getPartnerStats } from './db/airtable';
 import { updateTrialRemaining } from './db/airtable';
-import { logRequest, addUserSpend } from './db/airtable';
+import { logRequest, addUserSpend, getAdminStats } from './db/airtable';
+import type { AdminStats } from './db/airtable';
 import http from 'node:http';
 
 import type { BotContext, BotSession, Mode, ReplyProfile } from './bot.types';
@@ -810,6 +811,85 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
 }
 
 
+
+// -------------------- /admin --------------------
+function isAdmin(ctx: BotContext): boolean {
+  const ids = (process.env.ADMIN_TG_IDS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return ids.includes(String(ctx.from?.id ?? ''));
+}
+
+function adminStatsHtml(stats: AdminStats): string {
+  const r = (n: number) => n.toFixed(2);
+  const now = new Date().toLocaleString('ru-RU', { timeZone: 'UTC' });
+  return [
+    '📊 <b>Админ-статистика</b>',
+    '',
+    `👥 Пользователей всего: <b>${stats.totalUsers}</b>`,
+    `💎 Оптимальных: <b>${stats.optimalCount}</b>`,
+    `🚀 Максимальных: <b>${stats.maximumCount}</b>`,
+    '',
+    `🟢 Генераций сегодня (уник.): <b>${stats.genTodayUsers}</b>`,
+    `💰 Расходы сегодня: <b>${r(stats.costTodayRub)} ₽</b>`,
+    `   └ транскрипция: ${r(stats.costTodayTranscribeRub)} ₽`,
+    '',
+    `📆 Генераций за 3 дня (уник.): <b>${stats.genLast3Users}</b>`,
+    `💰 Расходы за 3 дня: <b>${r(stats.costLast3Rub)} ₽</b>`,
+    `   └ транскрипция: ${r(stats.costLast3TranscribeRub)} ₽`,
+    '',
+    `📅 Расходы за месяц: <b>${r(stats.costMonthRub)} ₽</b>`,
+    `   └ транскрипция: ${r(stats.costMonthTranscribeRub)} ₽`,
+    '',
+    `🔄 <i>Обновлено: ${now} UTC</i>`,
+  ].join('\n');
+}
+
+function adminInline() {
+  return {
+    parse_mode: 'HTML' as const,
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '🔄 Обновить', callback_data: 'admin:refresh' }],
+        [{ text: '🏠 В меню', callback_data: 'nav:home' }],
+      ],
+    },
+  };
+}
+
+bot.command('admin', async (ctx) => {
+  if (!isAdmin(ctx)) {
+    await ctx.reply('Недостаточно прав.');
+    return;
+  }
+  const stats = await getAdminStats().catch((e) => {
+    console.error('ADMIN_STATS_ERROR', e?.message);
+    return null;
+  });
+  if (!stats) {
+    await sendOrEditFlow(ctx, '📊 Статистика недоступна (Airtable не настроен).', adminInline());
+    return;
+  }
+  await sendOrEditFlow(ctx, adminStatsHtml(stats), adminInline());
+});
+
+bot.action('admin:refresh', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  if (!isAdmin(ctx)) {
+    await ctx.answerCbQuery('Недостаточно прав.', { show_alert: true }).catch(() => {});
+    return;
+  }
+  const stats = await getAdminStats().catch((e) => {
+    console.error('ADMIN_STATS_ERROR', e?.message);
+    return null;
+  });
+  if (!stats) {
+    await sendOrEditFlow(ctx, '📊 Статистика недоступна.', adminInline());
+    return;
+  }
+  await sendOrEditFlow(ctx, adminStatsHtml(stats), adminInline());
+});
 
 // -------------------- /start --------------------
 bot.start(async (ctx) => {
