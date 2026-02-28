@@ -82,7 +82,7 @@ bot.use(
   feedback: { plus: 0, minus: 0, thinkMore: 0 },
   anti: {},
   ui: { botMsgIds: [], userMsgIds: [] },
-  results: { items: [], index: 0 },
+  results: { items: [], index: 0, situationKey: '' },
   stdReturnTo: 'menu',
 }),
 
@@ -110,7 +110,7 @@ async function downloadTelegramFile(ctx: BotContext, fileId: string): Promise<Bu
 async function handleSituationReady(ctx: BotContext, situation: string, editMsgId?: number) {
   ctx.session.draft.situation = situation;
   ctx.session.variant = 0;
-  ctx.session.results = { items: [], index: 0 };
+  ctx.session.results = { items: [], index: 0, situationKey: '' };
 
   const isPlanMax = ctx.session.plan === 'maximum';
   const flowText = isPlanMax
@@ -359,11 +359,33 @@ function escapeHtml(s: string) {
 }
 
 // ---------- result UI ----------
-function resultKeyboard(index = 0, total = 0) {
+function saveResultVariant(ctx: BotContext, text: string, profile: ReplyProfile) {
+  const key = ctx.session.draft.situation ?? '';
+  const r = ctx.session.results ?? { items: [], index: 0, situationKey: '' };
+  if (r.situationKey !== key) {
+    r.items = [];
+    r.index = 0;
+    r.situationKey = key;
+  }
+  r.items.push({ text, profile });
+  r.index = r.items.length - 1;
+  ctx.session.results = r;
+  console.log('results items:', r.items.length, 'index:', r.index);
+}
+
+function resultVariantLabel(ctx: BotContext): string | undefined {
+  const r = ctx.session.results;
+  if (!r || r.items.length <= 1) return undefined;
+  return `Вариант ${r.index + 1}/${r.items.length}`;
+}
+
+function buildResultInline(ctx: BotContext) {
+  const r = ctx.session.results;
+  const index = r?.index ?? 0;
+  const total = r?.items.length ?? 0;
   const navRow: { text: string; callback_data: string }[] = [];
   if (index > 0) navRow.push({ text: '⬅️ Назад', callback_data: 'result:prev' });
   if (index < total - 1) navRow.push({ text: '➡️ Далее', callback_data: 'result:next' });
-
   return {
     reply_markup: {
       inline_keyboard: [
@@ -378,13 +400,6 @@ function resultKeyboard(index = 0, total = 0) {
       ],
     },
   };
-}
-
-function pushResult(ctx: BotContext, text: string, profile: ReplyProfile): { index: number; total: number } {
-  if (!ctx.session.results) ctx.session.results = { items: [], index: 0 };
-  ctx.session.results.items.push({ text, profile });
-  ctx.session.results.index = ctx.session.results.items.length - 1;
-  return { index: ctx.session.results.index, total: ctx.session.results.items.length };
 }
 
 
@@ -666,11 +681,11 @@ async function rerenderResult(ctx: BotContext) {
   const html = buildResultHtml(text, profile);
 
   try {
-    await ctx.editMessageText(html, { parse_mode: 'HTML', ...resultKeyboard() });
+    await ctx.editMessageText(html, { parse_mode: 'HTML', ...buildResultInline(ctx) });
   } catch (e: any) {
     const desc = e?.description ?? e?.response?.description ?? e?.message ?? '';
     if (!String(desc).toLowerCase().includes('message is not modified')) {
-      await sendOrEditResultHTML(ctx, html, resultKeyboard());
+      await sendOrEditResultHTML(ctx, html, buildResultInline(ctx));
     }
   }
 }
@@ -713,10 +728,10 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
 
       setUiVal(ctx, 'lastResultText', stub);
       setUiVal(ctx, 'lastResultProfile', full);
-      const { index: si, total: st } = pushResult(ctx, stub, full);
+      saveResultVariant(ctx, stub, full);
 
-      const html = buildResultHtml(stub, full, st > 1 ? `Вариант ${si + 1}/${st}` : undefined);
-      await sendOrEditResultHTML(ctx, html, resultKeyboard(si, st));
+      const html = buildResultHtml(stub, full, resultVariantLabel(ctx));
+      await sendOrEditResultHTML(ctx, html, buildResultInline(ctx));
 
       if (tgId) {
         await logRequest({
@@ -744,10 +759,10 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
 
       setUiVal(ctx, 'lastResultText', stub);
       setUiVal(ctx, 'lastResultProfile', full);
-      const { index: s2i, total: s2t } = pushResult(ctx, stub, full);
+      saveResultVariant(ctx, stub, full);
 
-      const html = buildResultHtml(stub, full, s2t > 1 ? `Вариант ${s2i + 1}/${s2t}` : undefined);
-      await sendOrEditResultHTML(ctx, html, resultKeyboard(s2i, s2t));
+      const html = buildResultHtml(stub, full, resultVariantLabel(ctx));
+      await sendOrEditResultHTML(ctx, html, buildResultInline(ctx));
       return;
     }
 
@@ -762,10 +777,10 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
 
     setUiVal(ctx, 'lastResultText', finalText);
     setUiVal(ctx, 'lastResultProfile', full);
-    const { index: gi, total: gt } = pushResult(ctx, finalText, full);
+    saveResultVariant(ctx, finalText, full);
 
-    const html = buildResultHtml(finalText, full, gt > 1 ? `Вариант ${gi + 1}/${gt}` : undefined);
-    await sendOrEditResultHTML(ctx, html, resultKeyboard(gi, gt));
+    const html = buildResultHtml(finalText, full, resultVariantLabel(ctx));
+    await sendOrEditResultHTML(ctx, html, buildResultInline(ctx));
 
     if (tgId) {
       await logRequest({
@@ -797,10 +812,10 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
     // 4) Регион заблокирован — фиксируем флаг и всегда уходим в stub
     if (e instanceof OpenAIRegionBlockedError) {
       OPENAI_DISABLED_RUNTIME = true;
-      const { index: r4i, total: r4t } = pushResult(ctx, stub, full);
+      saveResultVariant(ctx, stub, full);
 
-      const html = buildResultHtml(stub, full, r4t > 1 ? `Вариант ${r4i + 1}/${r4t}` : undefined);
-      await sendOrEditResultHTML(ctx, html, resultKeyboard(r4i, r4t));
+      const html = buildResultHtml(stub, full, resultVariantLabel(ctx));
+      await sendOrEditResultHTML(ctx, html, buildResultInline(ctx));
 
       if (tgId) {
         await logRequest({
@@ -823,9 +838,9 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
     }
 
     // 5) Любая другая ошибка — stub
-    const { index: r5i, total: r5t } = pushResult(ctx, stub, full);
-    const html = buildResultHtml(stub, full, r5t > 1 ? `Вариант ${r5i + 1}/${r5t}` : undefined);
-    await sendOrEditResultHTML(ctx, html, resultKeyboard(r5i, r5t));
+    saveResultVariant(ctx, stub, full);
+    const html = buildResultHtml(stub, full, resultVariantLabel(ctx));
+    await sendOrEditResultHTML(ctx, html, buildResultInline(ctx));
     return;
   }
 }
@@ -2228,12 +2243,11 @@ bot.action('result:prev', async (ctx) => {
   const r = ctx.session.results;
   if (!r || r.items.length === 0 || r.index <= 0) return;
   r.index -= 1;
+  ctx.session.results = r;
   const item = r.items[r.index];
-  setUiVal(ctx, 'lastResultText', item.text);
-  setUiVal(ctx, 'lastResultProfile', item.profile);
-  const label = r.items.length > 1 ? `Вариант ${r.index + 1}/${r.items.length}` : undefined;
-  const html = buildResultHtml(item.text, item.profile, label);
-  await sendOrEditResultHTML(ctx, html, resultKeyboard(r.index, r.items.length));
+  console.log('result:prev index:', r.index, 'len:', r.items.length);
+  const html = buildResultHtml(item.text, item.profile, resultVariantLabel(ctx));
+  await sendOrEditResultHTML(ctx, html, buildResultInline(ctx));
 });
 
 bot.action('result:next', async (ctx) => {
@@ -2241,12 +2255,11 @@ bot.action('result:next', async (ctx) => {
   const r = ctx.session.results;
   if (!r || r.items.length === 0 || r.index >= r.items.length - 1) return;
   r.index += 1;
+  ctx.session.results = r;
   const item = r.items[r.index];
-  setUiVal(ctx, 'lastResultText', item.text);
-  setUiVal(ctx, 'lastResultProfile', item.profile);
-  const label = r.items.length > 1 ? `Вариант ${r.index + 1}/${r.items.length}` : undefined;
-  const html = buildResultHtml(item.text, item.profile, label);
-  await sendOrEditResultHTML(ctx, html, resultKeyboard(r.index, r.items.length));
+  console.log('result:next index:', r.index, 'len:', r.items.length);
+  const html = buildResultHtml(item.text, item.profile, resultVariantLabel(ctx));
+  await sendOrEditResultHTML(ctx, html, buildResultInline(ctx));
 });
 
 // -------------------- help / instruction --------------------

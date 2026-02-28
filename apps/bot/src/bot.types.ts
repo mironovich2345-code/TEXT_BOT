@@ -147,6 +147,7 @@ export interface BotSession {
   results: {
     items: Array<{ text: string; profile: ReplyProfile }>;
     index: number;
+    situationKey: string;
   };
 
   stdReturnTo: 'menu' | 'answer_after_situation' | 'preset_detail';
