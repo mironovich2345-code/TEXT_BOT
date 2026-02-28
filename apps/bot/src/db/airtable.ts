@@ -188,30 +188,35 @@ export async function logRequest(args: {
 }) {
   if (!base) return;
 
+  const payload = {
+    tg_id: args.tgId,
+    model: args.model ?? '',
+    input_tokens: args.inputTokens ?? 0,
+    output_tokens: args.outputTokens ?? 0,
+    total_tokens: args.totalTokens ?? 0,
+    cost_usd: args.cost_usd ?? 0,
+    ...(args.cost_rub != null ? { cost_rub: args.cost_rub } : {}),
+    variant: args.variant,
+    situation_len: args.situationLen,
+    created_at: args.createdAt.toISOString(),
+  };
+
+  console.log('logRequest payload', payload);
+
   try {
     const table = base(REQS_TABLE);
-    await table.create({
-      tg_id: args.tgId,
-      event: args.event ?? 'generate',
-      input_kind: args.input_kind ?? 'text',
-      model: args.model ?? '',
-      input_tokens: args.inputTokens ?? 0,
-      output_tokens: args.outputTokens ?? 0,
-      total_tokens: args.totalTokens ?? 0,
-      audio_seconds: args.audio_seconds ?? 0,
-      cost_usd: args.cost_usd ?? 0,
-      ...(args.cost_rub != null ? { cost_rub: args.cost_rub } : {}),
-      ...(args.message_id != null ? { message_id: args.message_id } : {}),
-      variant: args.variant,
-      situation_len: args.situationLen,
-      created_at: args.createdAt.toISOString(),
-    });
+    await table.create(payload);
+    console.log('logRequest ok');
   } catch (e: any) {
-    console.log('AIRTABLE_LOGREQUEST_ERROR', {
+    const status = e?.status ?? e?.statusCode ?? e?.response?.status;
+    const errType = e?.error ?? e?.type;
+    const message = e?.message ?? String(e);
+    console.error('AIRTABLE_LOGREQUEST_ERROR', {
       table: REQS_TABLE,
-      msg: e?.message,
-      status: e?.status ?? e?.response?.status,
-      details: e,
+      status,
+      errType,
+      message,
+      payload,
     });
   }
 }
