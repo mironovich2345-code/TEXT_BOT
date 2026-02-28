@@ -82,6 +82,7 @@ bot.use(
   feedback: { plus: 0, minus: 0, thinkMore: 0 },
   anti: {},
   ui: { botMsgIds: [], userMsgIds: [] },
+  results: { items: [], index: 0 },
   stdReturnTo: 'menu',
 }),
 
@@ -109,6 +110,7 @@ async function downloadTelegramFile(ctx: BotContext, fileId: string): Promise<Bu
 async function handleSituationReady(ctx: BotContext, situation: string, editMsgId?: number) {
   ctx.session.draft.situation = situation;
   ctx.session.variant = 0;
+  ctx.session.results = { items: [], index: 0 };
 
   const isPlanMax = ctx.session.plan === 'maximum';
   const flowText = isPlanMax
@@ -357,7 +359,11 @@ function escapeHtml(s: string) {
 }
 
 // ---------- result UI ----------
-function resultKeyboard() {
+function resultKeyboard(index = 0, total = 0) {
+  const navRow: { text: string; callback_data: string }[] = [];
+  if (index > 0) navRow.push({ text: '⬅️ Назад', callback_data: 'result:prev' });
+  if (index < total - 1) navRow.push({ text: '➡️ Далее', callback_data: 'result:next' });
+
   return {
     reply_markup: {
       inline_keyboard: [
@@ -366,11 +372,19 @@ function resultKeyboard() {
           { text: '🫧 Мягче', callback_data: 'res:soft' },
           { text: '⚡️ Жестче', callback_data: 'res:hard' },
         ],
+        ...(navRow.length > 0 ? [navRow] : []),
         [{ text: '🛠️ Изменить параметры', callback_data: 'res:edit' }],
         [{ text: '🏠 В меню', callback_data: 'nav:home' }],
       ],
     },
   };
+}
+
+function pushResult(ctx: BotContext, text: string, profile: ReplyProfile): { index: number; total: number } {
+  if (!ctx.session.results) ctx.session.results = { items: [], index: 0 };
+  ctx.session.results.items.push({ text, profile });
+  ctx.session.results.index = ctx.session.results.items.length - 1;
+  return { index: ctx.session.results.index, total: ctx.session.results.items.length };
 }
 
 
@@ -511,8 +525,9 @@ function buildParamsQuoteHtml(profile: ReplyProfile) {
 }
 
 
-function buildResultHtml(answerText: string, profile: ReplyProfile) {
-  return `✅ Ответ (для копирования):\n<pre>${escapeHtml(answerText)}</pre>\n\n${buildParamsQuoteHtml(profile)}`;
+function buildResultHtml(answerText: string, profile: ReplyProfile, variantLabel?: string) {
+  const counter = variantLabel ? `\n<i>${variantLabel}</i>` : '';
+  return `✅ Ответ (для копирования):\n<pre>${escapeHtml(answerText)}</pre>${counter}\n\n${buildParamsQuoteHtml(profile)}`;
 }
 
 
@@ -698,9 +713,10 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
 
       setUiVal(ctx, 'lastResultText', stub);
       setUiVal(ctx, 'lastResultProfile', full);
+      const { index: si, total: st } = pushResult(ctx, stub, full);
 
-      const html = buildResultHtml(stub, full);
-      await sendOrEditResultHTML(ctx, html, resultKeyboard());
+      const html = buildResultHtml(stub, full, st > 1 ? `Вариант ${si + 1}/${st}` : undefined);
+      await sendOrEditResultHTML(ctx, html, resultKeyboard(si, st));
 
       if (tgId) {
         await logRequest({
@@ -728,9 +744,10 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
 
       setUiVal(ctx, 'lastResultText', stub);
       setUiVal(ctx, 'lastResultProfile', full);
+      const { index: s2i, total: s2t } = pushResult(ctx, stub, full);
 
-      const html = buildResultHtml(stub, full);
-      await sendOrEditResultHTML(ctx, html, resultKeyboard());
+      const html = buildResultHtml(stub, full, s2t > 1 ? `Вариант ${s2i + 1}/${s2t}` : undefined);
+      await sendOrEditResultHTML(ctx, html, resultKeyboard(s2i, s2t));
       return;
     }
 
@@ -745,9 +762,10 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
 
     setUiVal(ctx, 'lastResultText', finalText);
     setUiVal(ctx, 'lastResultProfile', full);
+    const { index: gi, total: gt } = pushResult(ctx, finalText, full);
 
-    const html = buildResultHtml(finalText, full);
-    await sendOrEditResultHTML(ctx, html, resultKeyboard());
+    const html = buildResultHtml(finalText, full, gt > 1 ? `Вариант ${gi + 1}/${gt}` : undefined);
+    await sendOrEditResultHTML(ctx, html, resultKeyboard(gi, gt));
 
     if (tgId) {
       await logRequest({
@@ -779,9 +797,10 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
     // 4) Регион заблокирован — фиксируем флаг и всегда уходим в stub
     if (e instanceof OpenAIRegionBlockedError) {
       OPENAI_DISABLED_RUNTIME = true;
+      const { index: r4i, total: r4t } = pushResult(ctx, stub, full);
 
-      const html = buildResultHtml(stub, full);
-      await sendOrEditResultHTML(ctx, html, resultKeyboard());
+      const html = buildResultHtml(stub, full, r4t > 1 ? `Вариант ${r4i + 1}/${r4t}` : undefined);
+      await sendOrEditResultHTML(ctx, html, resultKeyboard(r4i, r4t));
 
       if (tgId) {
         await logRequest({
@@ -804,8 +823,9 @@ async function showResult(ctx: BotContext, profile: Partial<ReplyProfile>) {
     }
 
     // 5) Любая другая ошибка — stub
-    const html = buildResultHtml(stub, full);
-    await sendOrEditResultHTML(ctx, html, resultKeyboard());
+    const { index: r5i, total: r5t } = pushResult(ctx, stub, full);
+    const html = buildResultHtml(stub, full, r5t > 1 ? `Вариант ${r5i + 1}/${r5t}` : undefined);
+    await sendOrEditResultHTML(ctx, html, resultKeyboard(r5i, r5t));
     return;
   }
 }
@@ -2200,6 +2220,33 @@ bot.action('res:edit', async (ctx) => {
   setMode(ctx, 'custom_audience');
 return sendOrEditFlow(ctx, '1) Для кого?', pickAudienceInline('cus'));
 
+});
+
+// -------------------- result nav (prev/next) --------------------
+bot.action('result:prev', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const r = ctx.session.results;
+  if (!r || r.items.length === 0 || r.index <= 0) return;
+  r.index -= 1;
+  const item = r.items[r.index];
+  setUiVal(ctx, 'lastResultText', item.text);
+  setUiVal(ctx, 'lastResultProfile', item.profile);
+  const label = r.items.length > 1 ? `Вариант ${r.index + 1}/${r.items.length}` : undefined;
+  const html = buildResultHtml(item.text, item.profile, label);
+  await sendOrEditResultHTML(ctx, html, resultKeyboard(r.index, r.items.length));
+});
+
+bot.action('result:next', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const r = ctx.session.results;
+  if (!r || r.items.length === 0 || r.index >= r.items.length - 1) return;
+  r.index += 1;
+  const item = r.items[r.index];
+  setUiVal(ctx, 'lastResultText', item.text);
+  setUiVal(ctx, 'lastResultProfile', item.profile);
+  const label = r.items.length > 1 ? `Вариант ${r.index + 1}/${r.items.length}` : undefined;
+  const html = buildResultHtml(item.text, item.profile, label);
+  await sendOrEditResultHTML(ctx, html, resultKeyboard(r.index, r.items.length));
 });
 
 // -------------------- help / instruction --------------------

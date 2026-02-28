@@ -144,6 +144,11 @@ export interface BotSession {
     resultMsgId?: number;
   };
 
+  results: {
+    items: Array<{ text: string; profile: ReplyProfile }>;
+    index: number;
+  };
+
   stdReturnTo: 'menu' | 'answer_after_situation' | 'preset_detail';
 
   // Пресеты (maximum plan)
