@@ -362,6 +362,104 @@ export async function getPartnerStats(referrerTgId: number): Promise<{
   return { invited, invitedActive, accrued, reservedToPayout, available, myAnswers };
 }
 
+// -------------------- Favorites --------------------
+
+const FAV_TABLE = process.env.AIRTABLE_FAVORITES_TABLE || 'Favorites';
+
+export interface FavoriteRecord {
+  id: string;
+  title: string;
+  situation: string;
+  answer: string;
+  profile_json: string;
+  created_at: string; // ISO string from Airtable Created time field
+}
+
+export async function addFavoriteWithLimit(
+  tgId: number,
+  data: { title: string; situation: string; answer: string; profile_json?: string },
+  limit = 10
+): Promise<void> {
+  if (!base) return;
+  const table = base(FAV_TABLE);
+
+  // Fetch existing non-deleted records
+  let existing: any[] = [];
+  try {
+    existing = await table
+      .select({
+        filterByFormula: `AND(${tgIdFormula(tgId)}, NOT({is_deleted}))`,
+        sort: [{ field: 'created_at', direction: 'asc' }],
+        fields: ['tg_id', 'created_at', 'is_deleted'],
+      })
+      .all() as any[];
+  } catch {
+    // If sort/field not available, fetch without sort
+    try {
+      existing = await table
+        .select({ filterByFormula: `AND(${tgIdFormula(tgId)}, NOT({is_deleted}))`, fields: ['tg_id'] })
+        .all() as any[];
+    } catch {
+      existing = [];
+    }
+  }
+
+  // Delete oldest if at limit
+  if (existing.length >= limit) {
+    const toDelete = existing[0]; // oldest (sorted asc)
+    try {
+      await table.destroy(toDelete.id);
+    } catch {
+      // soft delete fallback
+      try { await table.update(toDelete.id, { is_deleted: true }); } catch {}
+    }
+  }
+
+  // Create new record (created_at is a Created time field — do not pass it)
+  await table.create({
+    tg_id: tgId,
+    title: data.title.slice(0, 100),
+    situation: data.situation.slice(0, 1000),
+    answer: data.answer,
+    profile_json: data.profile_json ?? '',
+  });
+}
+
+export async function listFavorites(tgId: number): Promise<FavoriteRecord[]> {
+  if (!base) return [];
+  const table = base(FAV_TABLE);
+  try {
+    const rows = await table
+      .select({
+        filterByFormula: `AND(${tgIdFormula(tgId)}, NOT({is_deleted}))`,
+        sort: [{ field: 'created_at', direction: 'desc' }],
+        maxRecords: 10,
+      })
+      .all() as any[];
+    return rows.map((r) => ({
+      id: r.id,
+      title: String((r.fields as any).title ?? ''),
+      situation: String((r.fields as any).situation ?? ''),
+      answer: String((r.fields as any).answer ?? ''),
+      profile_json: String((r.fields as any).profile_json ?? ''),
+      created_at: String((r.fields as any).created_at ?? r.createdTime ?? ''),
+    }));
+  } catch (e) {
+    console.error('FAVORITES_LIST_ERROR', e);
+    return [];
+  }
+}
+
+export async function deleteFavorite(recordId: string): Promise<void> {
+  if (!base) return;
+  const table = base(FAV_TABLE);
+  try {
+    await table.destroy(recordId);
+  } catch {
+    try { await table.update(recordId, { is_deleted: true }); } catch {}
+  }
+}
+
 export interface AdminStats {
   totalUsers: number;
   optimalCount: number;

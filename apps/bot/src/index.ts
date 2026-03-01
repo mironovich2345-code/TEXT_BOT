@@ -6,6 +6,8 @@ import { ensureUser, setReferrerOnce, getPartnerStats } from './db/airtable';
 import { updateTrialRemaining } from './db/airtable';
 import { logRequest, addUserSpend, getAdminStats } from './db/airtable';
 import type { AdminStats } from './db/airtable';
+import { addFavoriteWithLimit, listFavorites, deleteFavorite } from './db/airtable';
+import type { FavoriteRecord } from './db/airtable';
 import http from 'node:http';
 
 import type { BotContext, BotSession, Mode, ReplyProfile } from './bot.types';
@@ -19,7 +21,7 @@ import {
   tariffInline,
   partnerInline,
 
-  
+  BTN_FAVORITES,
   pickAudienceInline,
   pickFormalityInline,
   pickLengthInline,
@@ -395,6 +397,7 @@ function buildResultInline(ctx: BotContext) {
           { text: '⚡️ Жестче', callback_data: 'res:hard' },
         ],
         ...(navRow.length > 0 ? [navRow] : []),
+        [{ text: '⭐️ В избранное', callback_data: 'fav:add' }],
         [{ text: '🛠️ Изменить параметры', callback_data: 'res:edit' }],
         [{ text: '🏠 В меню', callback_data: 'nav:home' }],
       ],
@@ -1020,6 +1023,15 @@ bot.hears(BTN_START, async (ctx) => {
     '📝 Описать ситуацию\n\nПришли текст ситуации, перешли чужое сообщение или отправь скриншот с подписью.',
     { reply_markup: { inline_keyboard: [[{ text: '🏠 В меню', callback_data: 'nav:home' }]] } }
   );
+});
+
+bot.hears(BTN_FAVORITES, async (ctx) => {
+  await cleanupUi(ctx);
+  setMode(ctx, 'favorites');
+  const tgId = ctx.from?.id;
+  if (!tgId) return;
+  const favs = await listFavorites(tgId);
+  return sendOrEditFlow(ctx, favListHtml(favs), favListInline(favs));
 });
 
 bot.hears(BTN_SETTINGS, async (ctx) => {
@@ -2235,6 +2247,140 @@ bot.action('res:edit', async (ctx) => {
   setMode(ctx, 'custom_audience');
 return sendOrEditFlow(ctx, '1) Для кого?', pickAudienceInline('cus'));
 
+});
+
+// -------------------- favorites helpers --------------------
+function autoTitle(situation: string): string {
+  const words = situation.trim().split(/\s+/).slice(0, 5).join(' ');
+  return words.length < situation.trim().length ? words + '…' : words;
+}
+
+function favListHtml(favs: FavoriteRecord[]): string {
+  if (favs.length === 0) {
+    return '⭐️ <b>Мои сохранённые</b>\n\nПусто. Нажми «⭐️ В избранное» под любым ответом.';
+  }
+  const lines = favs.map((f, i) => {
+    const d = f.created_at ? new Date(f.created_at).toLocaleDateString('ru-RU') : '';
+    return `${i + 1}. ${escapeHtml(f.title)}${d ? ` <i>${d}</i>` : ''}`;
+  });
+  return `⭐️ <b>Мои сохранённые</b>\n\n${lines.join('\n')}`;
+}
+
+function favListInline(favs: FavoriteRecord[]) {
+  const itemBtns = favs.map((f, i) => ({
+    text: `📄 ${i + 1}`,
+    callback_data: `fav:view:${f.id}`,
+  }));
+  // Split item buttons into rows of 5
+  const rows: { text: string; callback_data: string }[][] = [];
+  for (let i = 0; i < itemBtns.length; i += 5) {
+    rows.push(itemBtns.slice(i, i + 5));
+  }
+  return {
+    parse_mode: 'HTML' as const,
+    reply_markup: {
+      inline_keyboard: [
+        ...rows,
+        [{ text: '🏠 В меню', callback_data: 'nav:home' }],
+      ],
+    },
+  };
+}
+
+function favDetailHtml(f: FavoriteRecord): string {
+  const d = f.created_at ? new Date(f.created_at).toLocaleDateString('ru-RU') : '';
+  const header = `⭐️ <b>${escapeHtml(f.title)}</b>${d ? ` <i>${d}</i>` : ''}`;
+  const answer = `✅ Ответ (для копирования):\n<pre>${escapeHtml(f.answer)}</pre>`;
+  let params = '';
+  if (f.profile_json) {
+    try {
+      const p: Partial<ReplyProfile> = JSON.parse(f.profile_json);
+      params = `\n\n<blockquote expandable>${escapeHtml(profileSummary(p))}</blockquote>`;
+    } catch {}
+  }
+  return `${header}\n\n${answer}${params}`;
+}
+
+function favDetailInline(recordId: string) {
+  return {
+    parse_mode: 'HTML' as const,
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '🗑 Удалить', callback_data: `fav:del:${recordId}` }],
+        [{ text: '⬅️ К списку', callback_data: 'fav:list' }],
+        [{ text: '🏠 В меню', callback_data: 'nav:home' }],
+      ],
+    },
+  };
+}
+
+// -------------------- favorites actions --------------------
+bot.action('fav:add', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const tgId = ctx.from?.id;
+  if (!tgId) return;
+
+  const r = ctx.session.results;
+  const item = r?.items?.[r.index ?? 0];
+  const text = item?.text ?? getUiVal<string | null>(ctx, 'lastResultText', null);
+  const profile = item?.profile ?? getUiVal<ReplyProfile | null>(ctx, 'lastResultProfile', null);
+
+  if (!text) {
+    await ctx.answerCbQuery('Нет текста для сохранения.', { show_alert: true }).catch(() => {});
+    return;
+  }
+
+  const situation = ctx.session.draft.situation ?? '';
+  const title = autoTitle(situation || text);
+
+  try {
+    await addFavoriteWithLimit(tgId, {
+      title,
+      situation: situation.slice(0, 1000),
+      answer: text,
+      profile_json: profile ? JSON.stringify(profile) : undefined,
+    });
+    // Edit the result message to show confirmation, then restore after short delay
+    const html = buildResultHtml(text, profile ?? normalizeProfile({}), resultVariantLabel(ctx));
+    const confirmHtml = `${html}\n\n<i>⭐️ Сохранено в избранное</i>`;
+    await sendOrEditResultHTML(ctx, confirmHtml, buildResultInline(ctx));
+  } catch (e) {
+    console.error('FAV_ADD_ERROR', e);
+    await ctx.answerCbQuery('Ошибка при сохранении.', { show_alert: true }).catch(() => {});
+  }
+});
+
+bot.action('fav:list', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const tgId = ctx.from?.id;
+  if (!tgId) return;
+  const favs = await listFavorites(tgId);
+  await sendOrEditFlow(ctx, favListHtml(favs), favListInline(favs));
+});
+
+bot.action(/^fav:view:(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const tgId = ctx.from?.id;
+  if (!tgId) return;
+  const recordId = ctx.match[1];
+  // Fetch fresh list to find the record
+  const favs = await listFavorites(tgId);
+  const f = favs.find((x) => x.id === recordId);
+  if (!f) {
+    await sendOrEditFlow(ctx, '⭐️ Запись не найдена.', favListInline(favs));
+    return;
+  }
+  await sendOrEditFlow(ctx, favDetailHtml(f), favDetailInline(recordId));
+});
+
+bot.action(/^fav:del:(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const tgId = ctx.from?.id;
+  if (!tgId) return;
+  const recordId = ctx.match[1];
+  await deleteFavorite(recordId).catch((e) => console.error('FAV_DEL_ERROR', e));
+  const favs = await listFavorites(tgId);
+  await sendOrEditFlow(ctx, favListHtml(favs), favListInline(favs));
 });
 
 // -------------------- result nav (prev/next) --------------------

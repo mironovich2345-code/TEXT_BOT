@@ -10,11 +10,13 @@ export const BTN_HOME = '🏠 В меню';
 export const BTN_BACK = '⬅️ Назад';
 
 export const BTN_SETTINGS = '🎛 Задать пресет ответов';
+export const BTN_FAVORITES = '⭐️ Мои сохранённые';
 
 // Reply клавиатура: всегда “под рукой”
 export function mainMenu() {
   return Markup.keyboard([
     [BTN_START],
+    [BTN_FAVORITES],
     [BTN_TARIFF],
     [BTN_SETTINGS],
     [BTN_PARTNER],
