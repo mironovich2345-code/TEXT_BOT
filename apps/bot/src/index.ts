@@ -405,81 +405,6 @@ function buildResultInline(ctx: BotContext) {
   };
 }
 
-
-
-function profileSummary(p: Partial<ReplyProfile>) {
-  const audMap: Record<string, string> = {
-    boss: 'Руководитель',
-    peer: 'Коллега',
-    subordinate: 'Подчинённый',
-    service: 'Сервис',
-    personal: 'Личное',
-    other: 'Другое',
-  };
-  const goalMap: Record<string, string> = {
-    sell: 'Продажа',
-    ask: 'Просьба',
-    apologize: 'Извинение',
-    clarify: 'Уточнение',
-    refuse: 'Отказ',
-    buy: 'Покупка',
-    handle_negative: 'Негатив',
-    support: 'Поддержка',
-    congrats: 'Поздравление',
-    remind: 'Напоминание',
-    review: 'Отзыв',
-    collab: 'Сотрудничество',
-    cooperate: 'Сотрудничество',
-  };
-  const toneMap: Record<string, string> = {
-    neutral: 'Нейтрально',
-    friendly: 'Дружелюбно',
-    business: 'Деловой',
-    firm: 'Жёстко',
-    polite_pushy: 'Вежл.-настойчиво',
-    polite_soft: 'Вежливо (мягко)',
-    confident: 'Уверенно',
-    calm: 'Спокойно',
-    supportive: 'Поддерживающе',
-    positive: 'Позитивно',
-    official: 'Официально',
-    informal: 'Неформально',
-    ironic: 'Иронично',
-    categorical: 'Категорично',
-    constructive: 'Конструктивно',
-    apologetic: 'Примирительно',
-  };
-  const humMap: Record<string, string> = {
-    thanks: 'Спасибо',
-    compliment: 'Комплимент',
-    humor: 'Юмор',
-    strict: 'По делу',
-    empathy: 'Эмпатия',
-    apology: 'Извинение',
-    care: 'Забота',
-    support: 'Поддержка',
-    tact: 'Тактично',
-    transparent: 'Честно',
-    conf_no_pressure: 'Уверенно без давления',
-    positive_end: 'Позитивно',
-    choice: 'Выбор',
-    next_steps: 'Шаги',
-  };
-
-  const formality = p.formality === 'tu' ? 'Ты' : p.formality === 'vous' ? 'Вы' : '—';
-  const length =
-    p.length === 'short' ? 'Коротко' : p.length === 'normal' ? 'Средне' : p.length === 'detailed' ? 'Подробно' : '—';
-  const aud = p.audience ? (audMap[p.audience] ?? p.audience) : '—';
-  const goal = p.goal ? (goalMap[p.goal] ?? p.goal) : '—';
-
-  const tones = (p.tone ?? []).slice(0, 2).map((k) => toneMap[k] ?? k).join(', ') || '—';
-  const hums = (p.humanity ?? []).slice(0, 2).map((k) => humMap[k] ?? k).join(', ') || '—';
-
-  const advFlag = (p.ban?.length || p.emotion || p.format) ? ' • ⚙️ adv' : '';
-
-  return `👤 ${aud} • ${formality} • 📏 ${length} • 🎯 ${goal}\n🎙 ${tones} • 😊 ${hums}${advFlag}`;
-}
-
 function profileLabel(p: Partial<ReplyProfile>) {
   const audMap: Record<string, string> = {
     boss: 'Выше меня (Руководитель)',
@@ -2291,14 +2216,7 @@ function favDetailHtml(f: FavoriteRecord): string {
   const d = f.created_at ? new Date(f.created_at).toLocaleDateString('ru-RU') : '';
   const header = `⭐️ <b>${escapeHtml(f.title)}</b>${d ? ` <i>${d}</i>` : ''}`;
   const answer = `✅ Ответ (для копирования):\n<pre>${escapeHtml(f.answer)}</pre>`;
-  let params = '';
-  if (f.profile_json) {
-    try {
-      const p: Partial<ReplyProfile> = JSON.parse(f.profile_json);
-      params = `\n\n<blockquote expandable>${escapeHtml(profileSummary(p))}</blockquote>`;
-    } catch {}
-  }
-  return `${header}\n\n${answer}${params}`;
+  return `${header}\n\n${answer}`;
 }
 
 function favDetailInline(recordId: string) {
