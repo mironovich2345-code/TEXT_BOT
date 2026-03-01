@@ -219,6 +219,21 @@ export async function extractSituationFromImage(
   }
 }
 
+// Markers that indicate advice/analysis instead of a ready-to-send message
+const ADVICE_PATTERN =
+  /(как ты думаешь|стоит\b|нужно\b|рекоменд|важно поговорить|возможно стоит|попробуй|совет\b)/i;
+
+function hasAdviceMarkers(text: string): boolean {
+  return ADVICE_PATTERN.test(text);
+}
+
+function fallbackCleanup(text: string): string {
+  const lines = text.split("\n");
+  const clean = lines.filter((line) => !ADVICE_PATTERN.test(line));
+  const result = clean.join("\n").trim();
+  return result.length > 0 ? result : text.trim();
+}
+
 export async function generateReplyAI(args: {
   situation: string;
   profile: ReplyProfile;
@@ -227,22 +242,29 @@ export async function generateReplyAI(args: {
   const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
   const instructions =
-    "Ты пишешь готовый текст сообщения для отправки.\n" +
+    "Ты пишешь готовый текст сообщения, которое пользователь отправит собеседнику.\n" +
+    "ЗАПРЕЩЕНО: советы ('стоит', 'нужно', 'попробуй', 'рекоменд*'), психологический анализ, " +
+    "вопросы пользователю ('как ты думаешь'), фразы 'возможно стоит', 'важно поговорить'.\n" +
+    "ТОЛЬКО готовый текст сообщения — без заголовков, без списков советов, без пояснений.\n" +
+    "Уточняющие вопросы ВНУТРИ текста собеседнику — разрешены (например: «Подскажи, когда удобно…»).\n" +
     "Отвечай на языке ситуации. Если язык не очевиден — используй русский.\n" +
     "СТРОГО соблюдай параметр 'Приветствие': если 'Сразу ответ' — НЕ начинай с приветствия (никаких 'Здравствуйте', 'Привет', 'Bonjour').\n" +
-    "Соблюдай длину: коротко=2 строки, средне=3–5 строк, подробно=7–10 строк.\n" +
-    "Не добавляй служебные пояснения, только готовый текст сообщения.\n";
+    "Соблюдай длину: коротко=2 строки, средне=3–5 строк, подробно=7–10 строк.\n";
 
-  const input = [
-    `Ситуация: ${args.situation}`,
-    ``,
-    `Параметры:`,
-    profileToLines(args.profile),
-    ``,
-    `Сделай вариант #${args.variant + 1}.`,
-  ].join("\n");
+  const CORRECTION_SUFFIX =
+    "\n\nВАЖНО: Верни ТОЛЬКО готовый текст для отправки. Без советов, без рассуждений, без вопросов к пользователю.";
 
-  try {
+  async function callModel(extraNote: string): Promise<{ text: string; prompt_tokens: number; completion_tokens: number }> {
+    const input = [
+      `Ситуация: ${args.situation}`,
+      ``,
+      `Параметры:`,
+      profileToLines(args.profile),
+      ``,
+      `Сделай вариант #${args.variant + 1}.`,
+      extraNote,
+    ].join("\n");
+
     const resp = await client.responses.create({
       model,
       instructions,
@@ -253,10 +275,34 @@ export async function generateReplyAI(args: {
 
     const text = ((resp as any).output_text ?? "").trim();
     const usage = (resp as any).usage;
-    const prompt_tokens = usage?.input_tokens ?? 0;
-    const completion_tokens = usage?.output_tokens ?? 0;
-    const cost_usd = calcTextCostUsd(model, prompt_tokens, completion_tokens);
-    return { text, model, prompt_tokens, completion_tokens, cost_usd };
+    return {
+      text,
+      prompt_tokens: usage?.input_tokens ?? 0,
+      completion_tokens: usage?.output_tokens ?? 0,
+    };
+  }
+
+  try {
+    const first = await callModel("");
+    let totalPrompt = first.prompt_tokens;
+    let totalCompletion = first.completion_tokens;
+    let text = first.text;
+
+    if (hasAdviceMarkers(text)) {
+      console.log("generateReplyAI: advice markers detected, retrying");
+      const retry = await callModel(CORRECTION_SUFFIX);
+      totalPrompt += retry.prompt_tokens;
+      totalCompletion += retry.completion_tokens;
+      text = retry.text;
+
+      if (hasAdviceMarkers(text)) {
+        console.log("generateReplyAI: advice markers after retry, applying fallback cleanup");
+        text = fallbackCleanup(text);
+      }
+    }
+
+    const cost_usd = calcTextCostUsd(model, totalPrompt, totalCompletion);
+    return { text, model, prompt_tokens: totalPrompt, completion_tokens: totalCompletion, cost_usd };
   } catch (e: any) {
     const status = e?.status ?? e?.response?.status;
     const msg = String(e?.message ?? "");
