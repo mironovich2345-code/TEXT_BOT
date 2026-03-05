@@ -11,19 +11,32 @@ export const BTN_BACK = '⬅️ Назад';
 
 export const BTN_SETTINGS = '🎛 Задать пресет ответов';
 export const BTN_FAVORITES = '⭐️ Мои сохранённые';
+export const BTN_PROFILE = '👤 Мой профиль';
 
 // Reply клавиатура: всегда “под рукой”
 export function mainMenu() {
   return Markup.keyboard([
     [BTN_START],
-    [BTN_FAVORITES],
-    [BTN_TARIFF],
+    [BTN_PROFILE],
     [BTN_SETTINGS],
-    [BTN_PARTNER],
     [BTN_SUPPORT],
   ])
     .resize()
     .persistent();
+}
+
+// Inline: экран профиля
+export function profileMenuInline() {
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '💳 Мой тариф', callback_data: 'profile:tariff' }],
+        [{ text: '🤝 Партнёрская программа', callback_data: 'profile:partner' }],
+        [{ text: '⭐️ Мои сохранённые', callback_data: 'fav:list' }],
+        [{ text: '🏠 В меню', callback_data: 'nav:home' }],
+      ],
+    },
+  };
 }
 
 export function navMenu() {
@@ -386,6 +399,8 @@ export function helpMenuInline() {
       inline_keyboard: [
         [{ text: '🤝 Связаться', url: 'https://t.me/mironovich_d' }],
         [{ text: '📖 Инструкция', callback_data: 'help:instruction' }],
+        [{ text: '📄 Оферта', url: 'https://docs.yandex.ru/docs/view?url=ya-disk-public%3A%2F%2F6hqVyHTfw%2BgVrVNMjs1keGfJW82AifgWsquCs7jrPjmIx%2BY4RFxLSXdrmmOAHRs7q%2FJ6bpmRyOJonT3VoXnDag%3D%3D%3A%2Foferta_700802400242.docx&name=oferta_700802400242.docx&nosw=1' }],
+        [{ text: '🛑 Отменить подписку', callback_data: 'help:cancel' }],
         [{ text: '🏠 В меню', callback_data: 'nav:home' }],
       ],
     },

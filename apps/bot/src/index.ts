@@ -6,7 +6,7 @@ import { ensureUser, setReferrerOnce, getPartnerStats } from './db/airtable';
 import { updateTrialRemaining } from './db/airtable';
 import { logRequest, addUserSpend, getAdminStats } from './db/airtable';
 import type { AdminStats } from './db/airtable';
-import { addFavoriteWithLimit, listFavorites, deleteFavorite } from './db/airtable';
+import { addFavoriteWithLimit, listFavorites, deleteFavorite, cancelSubscriptionForUser } from './db/airtable';
 import type { FavoriteRecord } from './db/airtable';
 import http from 'node:http';
 
@@ -22,6 +22,8 @@ import {
   partnerInline,
 
   BTN_FAVORITES,
+  BTN_PROFILE,
+  profileMenuInline,
   pickAudienceInline,
   pickFormalityInline,
   pickLengthInline,
@@ -959,6 +961,12 @@ bot.hears(BTN_FAVORITES, async (ctx) => {
   return sendOrEditFlow(ctx, favListHtml(favs), favListInline(favs));
 });
 
+bot.hears(BTN_PROFILE, async (ctx) => {
+  await cleanupUi(ctx);
+  setMode(ctx, 'profile');
+  return sendOrEditFlow(ctx, '👤 Мой профиль', profileMenuInline());
+});
+
 bot.hears(BTN_SETTINGS, async (ctx) => {
   await cleanupUi(ctx);
   initPresets(ctx);
@@ -1164,6 +1172,26 @@ bot.action('nav:home', async (ctx) => {
   ctx.session.draft = {};
   ctx.session.variant = 0;
   return sendMainMenu(ctx);
+});
+
+// -------------------- profile menu --------------------
+bot.action('profile:tariff', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  setMode(ctx, 'tariff');
+  try {
+    const u = await ensureUser({ tgId: ctx.from!.id, username: ctx.from?.username, firstName: ctx.from?.first_name });
+    ctx.session.plan = u.plan;
+    ctx.session.trial.startedAt = u.trialStartedAt ?? undefined;
+    ctx.session.trial.expiresAt = u.trialExpiresAt ?? undefined;
+  } catch (e) { console.error('TARIFF_ENSURE_USER_ERROR', e); }
+  const plan = getCurrentPlan(ctx);
+  return sendOrEditFlow(ctx, currentTariffText(ctx), tariffChooseKeyboard(plan));
+});
+
+bot.action('profile:partner', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  setMode(ctx, 'partner');
+  return sendOrEditFlow(ctx, '🤝 Партнёрка:', partnerInline());
 });
 
 // -------------------- inline: start menu actions --------------------
@@ -1578,7 +1606,7 @@ bot.on('text', async (ctx) => {
   const text = ctx.message.text.trim();
   const fwd = extractForwardedText(ctx);
 
-  if ([BTN_START, BTN_SETTINGS, BTN_SUPPORT, BTN_TARIFF, BTN_PARTNER, BTN_HOME, BTN_BACK].includes(text)) return;
+  if ([BTN_START, BTN_SETTINGS, BTN_SUPPORT, BTN_TARIFF, BTN_PARTNER, BTN_HOME, BTN_BACK, BTN_FAVORITES, BTN_PROFILE].includes(text)) return;
 
   const textMode = ctx.session.mode;
   if (textMode !== 'wait_situation' && !FAST_PATH_MODES.has(textMode)) {
@@ -2324,6 +2352,57 @@ bot.action('result:next', async (ctx) => {
   console.log('result:next index:', r.index, 'len:', r.items.length);
   const html = buildResultHtml(item.text, item.profile, resultVariantLabel(ctx));
   await sendOrEditResultHTML(ctx, html, buildResultInline(ctx));
+});
+
+// -------------------- help: cancel subscription --------------------
+bot.action('help:cancel', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  return sendOrEditFlow(ctx, 'Вы уверены, что хотите отменить подписку?', {
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: '✅ Да', callback_data: 'sub:cancel_yes' },
+          { text: '❌ Нет', callback_data: 'sub:cancel_no' },
+        ],
+      ],
+    },
+  });
+});
+
+bot.action('sub:cancel_no', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  return sendOrEditFlow(ctx, '❓ Помощь\n\nВыбери, что тебя интересует:', helpMenuInline());
+});
+
+bot.action('sub:cancel_yes', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const tgId = ctx.from?.id;
+  if (!tgId) return;
+
+  let paidUntil: string | null = null;
+  try {
+    const result = await cancelSubscriptionForUser(tgId);
+    paidUntil = result.paidUntil;
+    // Update session plan
+    if (!paidUntil || new Date(paidUntil).getTime() <= Date.now()) {
+      ctx.session.plan = 'expired';
+    }
+  } catch (e) {
+    console.error('SUB_CANCEL_ERROR', e);
+  }
+
+  const lines = ['✅ Подписка отменена. Автопродление отключено.'];
+  if (paidUntil && new Date(paidUntil).getTime() > Date.now()) {
+    lines.push(`\nДоступ активен до: ${new Date(paidUntil).toLocaleDateString('ru-RU')}`);
+  }
+
+  return sendOrEditFlow(ctx, lines.join(''), {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '🏠 В меню', callback_data: 'nav:home' }],
+      ],
+    },
+  });
 });
 
 // -------------------- help / instruction --------------------

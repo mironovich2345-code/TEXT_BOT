@@ -230,6 +230,37 @@ export async function logRequest(args: {
 // addUserSpend is a no-op: spent totals are computed by Airtable rollup fields.
 export async function addUserSpend(_tgId: number, _deltaUsd: number, _deltaReq = 1) {}
 
+export async function cancelSubscriptionForUser(tgId: number): Promise<{ paidUntil: string | null }> {
+  if (!base) return { paidUntil: null };
+  const table = base(USERS_TABLE);
+  const recordId = await findUserRecordIdByTgId(tgId);
+  if (!recordId) return { paidUntil: null };
+
+  const rec = await table.find(recordId);
+  const fields = rec.fields as any;
+
+  const paidUntilRaw = fields.paid_until ?? null;
+  const paidUntil = paidUntilRaw ? String(paidUntilRaw) : null;
+  const hasActivePeriod = paidUntil && new Date(paidUntil).getTime() > Date.now();
+
+  const updates: Record<string, any> = {
+    auto_renew: false,
+    cancelled_at: new Date().toISOString(),
+  };
+  if (!hasActivePeriod) updates.plan = 'expired';
+
+  try {
+    await table.update(recordId, updates);
+  } catch {
+    // Some optional fields may not exist — fallback to only updating plan
+    if (!hasActivePeriod) {
+      await table.update(recordId, { plan: 'expired' }).catch(() => {});
+    }
+  }
+
+  return { paidUntil };
+}
+
 /**
  * Ставит реферера для пользователя ОДИН РАЗ (навсегда).
  * Если referrer уже есть — ничего не делает.
