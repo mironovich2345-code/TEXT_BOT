@@ -400,6 +400,7 @@ export function helpMenuInline() {
         [{ text: '🤝 Связаться', url: 'https://t.me/mironovich_d' }],
         [{ text: '📖 Инструкция', callback_data: 'help:instruction' }],
         [{ text: '📄 Оферта', url: 'https://docs.yandex.ru/docs/view?url=ya-disk-public%3A%2F%2F6hqVyHTfw%2BgVrVNMjs1keGfJW82AifgWsquCs7jrPjmIx%2BY4RFxLSXdrmmOAHRs7q%2FJ6bpmRyOJonT3VoXnDag%3D%3D%3A%2Foferta_700802400242.docx&name=oferta_700802400242.docx&nosw=1' }],
+        [{ text: '📋 Дополнительные сведения', url: 'https://docs.yandex.ru/docs/view?url=ya-disk-public%3A%2F%2FhO4Ac7j0Um8t%2FNw5RzcgFcI%2Fngy582PdJdOiJyTCQC4xAuExTFcCptboWWNT4YsUq%2FJ6bpmRyOJonT3VoXnDag%3D%3D&name=Дополнительные%20сведения.pdf&nosw=1' }],
         [{ text: '🛑 Отменить подписку', callback_data: 'help:cancel' }],
         [{ text: '🏠 В меню', callback_data: 'nav:home' }],
       ],
